@@ -1,0 +1,75 @@
+[project]
+name = "vault-ask"
+version = "0.1.0"
+description = "Answers questions against the Obsidian vault, using the vault as the authoritative source and the web only as a labelled fallback"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "litellm>=1.55",
+    "sqlite-vec>=0.1.6",
+    "mcp>=2.1.1",
+    # Web fallback (vault_ask/web.py). Deliberately the only unofficial
+    # interface in this project: it scrapes DuckDuckGo rather than calling a
+    # supported API, so it is rate-limited and will break when their HTML
+    # changes. That is an accepted trade for needing no account and no key —
+    # and web results are best-effort by design here, never load-bearing, so a
+    # breakage degrades to vault-only answers rather than failing a request.
+    "ddgs>=9.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-pyyaml",
+]
+
+[project.scripts]
+vault-ask = "vault_ask.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vault_ask"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "S", "RUF"]
+ignore = [
+    "S101",     # assert is fine in tests and internal invariants
+    "B008",     # FastAPI Depends() in defaults is idiomatic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["litellm.*", "sqlite_vec.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

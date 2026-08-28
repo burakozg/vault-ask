@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# Deploy vault-ask to the NAS. Run it on the Mac.
+#
+#   ./deploy            build, ship, bring it up
+#   ./deploy ship       build and ship only — nothing restarted
+#   ./deploy apply      bring it up from what is already on the NAS
+#   ./deploy render     write deploy-out/docker-compose.nas.yml and stop
+#   ./deploy check      is it running, and reachable over the LAN
+#   ./deploy logs       follow the container's log
+#
+# See homelab/README.md for the verb contract the sibling projects share.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+. ./deploy.lib.sh
+nas_load_env "$PWD" "/share/Container/vault-ask"
+
+LIFECYCLE=compose
+TAG="vault-ask:nas"
+NAS_COMPOSE="docker-compose.nas.yml"
+RENDERED="deploy-out/docker-compose.nas.yml"
+
+# This container's own qnet address — curl / API clients reach it here.
+APP_LAN_IP="${APP_LAN_IP:-10.0.0.2}"
+# The third-party UI's own qnet address — a browser reaches *this* one, and
+# vault-ask's own /chat lives at APP_LAN_IP. Separate from
+# APP_LAN_IP: the two containers talk to each other over the `internal`
+# bridge (docker-compose.nas.yml), never through either qnet address.
+# Note: no apostrophes in any of these :? messages below — bash balances
+# quote characters inside ${...} on its own, independent of the surrounding
+# double quotes, so a bare apostrophe here breaks parsing of the whole file.
+WEBUI_LAN_IP="${WEBUI_LAN_IP:?Set WEBUI_LAN_IP in .deploy.env — the qnet address for the chat UI}"
+# Where the vault lives — the same CouchDB Obsidian LiveSync replicates against.
+VAULT_LAN_IP="${VAULT_LAN_IP:?Set VAULT_LAN_IP in .deploy.env — the vault CouchDB address}"
+# A LAN machine running Ollama (OLLAMA-SETUP.md) — not this container, and not
+# necessarily the NAS.
+EMBEDDING_HOST="${EMBEDDING_HOST:?Set EMBEDDING_HOST in .deploy.env — the LAN address of the Ollama host}"
+# The Container-Station-owned macvlan both containers join. Not a secret and
+# already named in docker-compose.nas.yml, so it is a default rather than a
+# required var; override in .deploy.env if Container Station names it
+# differently. Used to resolve the gateway for the ARP wake below.
+QNET="${QNET:-qnet-static-eth1-dc7e3a}"
+# The third-party chat UI kept for comparison against vault-ask's own /chat
+# page (docker-compose.nas.yml). Named here so swapping it is one edit.
+UI_NAME="${UI_NAME:-NextChat}"
+UI_CONTAINER="${UI_CONTAINER:-vault-ask-nextchat}"
+
+do_render() {
+  nas_render "$NAS_COMPOSE" "$RENDERED" \
+    "s#APP_LAN_IP_PLACEHOLDER#${APP_LAN_IP}#" \
+    "s#APP_MAC_PLACEHOLDER#$(nas_mac_for_ip "${APP_LAN_IP}")#" \
+    "s#WEBUI_LAN_IP_PLACEHOLDER#${WEBUI_LAN_IP}#" \
+    "s#WEBUI_MAC_PLACEHOLDER#$(nas_mac_for_ip "${WEBUI_LAN_IP}")#" \
+    "s#APP_VAULT_URL_PLACEHOLDER#${VAULT_LAN_IP}#" \
+    "s#APP_EMBEDDING_HOST_PLACEHOLDER#${EMBEDDING_HOST}#"
+}
+
+do_ship() {
+  nas_require_reachable
+  nas_ship_image "$TAG" "$PWD"
+
+  echo "== shipping the compose definition =="
+  do_render
+  nas_put "$RENDERED" "${NAS_APP_DIR}/docker-compose.yml"
+
+  # The index directory must exist and be writable by the container's uid
+  # before the first run, or indexing loses its progress every restart. Same
+  # for webui-data/ — kept only so retiring Open WebUI stays reversible; the
+  # current UI stores nothing on disk.
+  nas_ssh "mkdir -p '${NAS_APP_DIR}/data' '${NAS_APP_DIR}/webui-data' && chmod 777 '${NAS_APP_DIR}/data' '${NAS_APP_DIR}/webui-data'"
+
+  ship_secrets
+}
+
+# The three credentials the container needs, pushed from the local .env —
+# same reasoning as clippings-topics: when a key is rotated, the place you
+# rotate it should be the place the deploy reads. mode 600, and never into a
+# tracked file: this is the one thing here that must not end up in git or in
+# a compose file.
+ship_secrets() {
+  [ -f .env ] || die ".env is missing — it holds VAULT_COUCHDB_PASSWORD, OPENROUTER_API_KEY and ADMIN_API_KEY."
+  local tmp
+  tmp="$(mktemp -t vault-ask-env)"
+  # shellcheck disable=SC2064
+  trap "rm -f '${tmp}'" EXIT
+  {
+    grep -E '^VAULTASK_VAULT_COUCHDB_PASSWORD=' .env || true
+    grep -E '^VAULTASK_OPENROUTER_API_KEY=' .env || true
+    grep -E '^VAULTASK_ADMIN_API_KEY=' .env || true
+  } > "$tmp"
+  local n
+  n="$(wc -l < "$tmp" | tr -d '[:space:]')"
+  [ "$n" = "3" ] || die "expected 3 secrets in .env, found ${n}"
+
+  echo "== shipping secrets =="
+  nas_put "$tmp" "${NAS_APP_DIR}/.env" 600
+  echo "  ✓ 3 keys, mode 600"
+  rm -f "$tmp"
+}
+
+# Warn before recreating containers onto a NAS with nothing left to give.
+#
+# The one incident this deploy has actually caused was chased as an SQLite
+# problem for an hour before the real cause turned up here. Open WebUI started
+# fine — it just took ~9 minutes to page its ~5 GB image in, which is
+# indistinguishable from a hang unless you think to look.
+#
+# Load average, not free memory, is the signal that matters. Measured during a
+# slow start: 850 MB actually free but 3301 MB "free" in the -/+ buffers/cache
+# column, so a memory threshold alone stays quiet — while load average sat at
+# 19.7 on a box that is unhappy above ~8. Both are reported; either one trips
+# the warning.
+warn_if_host_busy() {
+  local stats load1 free_mb
+  stats="$(nas_ssh "cut -d' ' -f1 /proc/loadavg; free -m 2>/dev/null | awk '/^Mem:/ {print \$4}'" 2>/dev/null || echo "")"
+  load1="$(printf '%s\n' "$stats" | sed -n 1p)"
+  free_mb="$(printf '%s\n' "$stats" | sed -n 2p)"
+
+  # Integer part only — this has to compare in POSIX shell, which has no floats.
+  case "${load1%%.*}" in
+    ''|*[!0-9]*) load1="" ;;
+  esac
+  case "$free_mb" in
+    ''|*[!0-9]*) free_mb="" ;;
+  esac
+
+  local busy=""
+  [ -n "$load1" ] && [ "${load1%%.*}" -ge 8 ] && busy="load ${load1}"
+  [ -n "$free_mb" ] && [ "$free_mb" -lt 800 ] && busy="${busy:+${busy}, }only ${free_mb} MB free"
+  [ -n "$busy" ] || return 0
+
+  echo "  ⚠ NAS is under pressure (${busy})."
+  echo "    Container startup will be slow — minutes, not seconds. That is not"
+  echo "    a hang, and it is not the database. See README 'Deployment'."
+}
+
+# The third-party UI cannot wake its own ARP entry the way vault-ask does (see
+# api/app.py::_wake_arp) — it is someone else's image with no hook to add one.
+# So the deploy does it from outside, once the container is up.
+#
+# The gateway is resolved on the HOST, from docker's own view of the network,
+# rather than inside the container: the obvious `ip route` does not work there
+# (that image ships no iproute2), and the first version of this function was
+# wrapped in `|| true`, so it failed silently and did nothing at all — the
+# exact "invisible when broken" shape this deploy has been bitten by twice.
+# Hence also the visible warning below instead of swallowing failures.
+wake_ui_arp() {
+  local gateway
+  gateway="$(nas_ssh "${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' network inspect ${QNET} \
+    --format '{{(index .IPAM.Config 0).Gateway}}'" 2>/dev/null | tr -d '\r')"
+  case "$gateway" in
+    ''|*[!0-9.]*)
+      echo "  ⚠ could not resolve the ${QNET} gateway; skipping the ARP wake."
+      echo "    If ${UI_NAME} is unreachable but healthy, this is the manual fix:"
+      echo "    docker exec ${UI_CONTAINER} curl -s -m 3 -o /dev/null http://<gateway>/"
+      return 0 ;;
+  esac
+  # The connection is *expected* to fail — nothing need listen on the gateway.
+  # Sending the packet is the entire point, so only a failure to *run* it is
+  # worth reporting.
+  nas_ssh "${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' exec ${UI_CONTAINER} \
+    sh -c 'curl -s -m 3 -o /dev/null http://${gateway}/ || true'" >/dev/null 2>&1 \
+    || echo "  ⚠ ARP wake could not run against ${UI_NAME} (container not up yet?)."
+}
+
+# Open WebUI is no longer in the compose file, and `compose up -d` does not
+# remove containers it no longer knows about — it would keep running, still
+# bound to WEBUI_LAN_IP, fighting the new UI for the address. Its data
+# directory is deliberately NOT touched: the swap stays reversible.
+retire_open_webui() {
+  nas_ssh "${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' inspect vault-ask-webui >/dev/null 2>&1" || return 0
+  echo "== retiring Open WebUI (its webui-data/ is kept) =="
+  nas_ssh "${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' rm -f vault-ask-webui" >/dev/null 2>&1 \
+    && echo "  ✓ container removed; data left on disk" \
+    || echo "  ⚠ could not remove vault-ask-webui — remove it by hand if the UI cannot bind its address"
+}
+
+do_apply() {
+  nas_require_reachable
+  warn_if_host_busy
+  retire_open_webui
+  nas_compose_up
+  echo
+  # "Up (healthy)" is not "reachable" — probe from here, over the network a
+  # user actually arrives on (see deploy.lib.sh::nas_wait_reachable).
+  # 36 tries (3 min), not the 12 (60s) default. vault-ask starts in seconds on
+  # an idle host, but this NAS runs a dozen other containers and a redeploy
+  # brings both of ours up at once — measured load average 19.7 during one,
+  # where even this container missed 60s. A probe that cries wolf is worse
+  # than none: it sent an hour of investigation after the wrong thing.
+  nas_wait_reachable "vault-ask" "http://${APP_LAN_IP}:8080" "/healthz" "2.." 36 \
+    || die "Deployed, but the API is not reachable over the LAN — see above."
+  # The UI has no /healthz; its own root page answers 200 once up.
+  #
+  # 36 tries (3 min), same as vault-ask. This was 240 (20 min) when the UI was
+  # Open WebUI, sized against its measured 16.2-minute cold start. NextChat
+  # starts in ~12s and keeps no database, so leaving the old number would hide
+  # a genuinely broken UI behind twenty minutes of patient waiting — a timeout
+  # far larger than the thing it measures is its own kind of lie.
+  wake_ui_arp
+  nas_wait_reachable "${UI_NAME}" "http://${WEBUI_LAN_IP}:3000" "/" "2.." 36 \
+    || die "Deployed, but ${UI_NAME} is not reachable over the LAN — see above."
+  echo
+  echo "done."
+  echo "  UI:  http://${WEBUI_LAN_IP}:8080"
+  echo "  API: http://${APP_LAN_IP}:8080/v1"
+  echo "Logs:  ./deploy logs   |   ./deploy ui-logs"
+  echo
+  echo "Note: the NAS host itself cannot reach either address (macvlan); check"
+  echo "from another machine on the LAN or VPN."
+}
+
+do_check() {
+  nas_require_reachable
+  nas_ssh "cd '${NAS_APP_DIR}' && ${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' compose ps --format 'table {{.Name}}\t{{.Status}}'"
+  echo
+  echo "══ reachability ═════════════════════════════════════════════"
+  nas_probe "vault-ask" "http://${APP_LAN_IP}:8080" "/healthz" || {
+    echo "  ↳ Expected if you're off the LAN/VPN. The NAS host cannot reach its"
+    echo "    own macvlan children either — probe from another machine, not ssh."
+  }
+  nas_probe "${UI_NAME}" "http://${WEBUI_LAN_IP}:3000" "/" || {
+    echo "  ↳ Expected if you're off the LAN/VPN — same as above."
+  }
+  echo
+  echo "══ recent log (vault-ask) ═══════════════════════════════════"
+  nas_ssh "${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' logs --tail 20 vault-ask 2>&1" || true
+}
+
+do_logs() {
+  nas_require_reachable
+  nas_ssh -t "${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' logs -f --tail 40 vault-ask"
+}
+
+do_webui_logs() {
+  nas_require_reachable
+  nas_ssh -t "${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' logs -f --tail 40 ${UI_CONTAINER}"
+}
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: ./deploy [verb] [--no-apply]
+
+  (none)   ship, then bring it up — the everyday command
+  ship     build the image, ship it and the compose file; nothing restarted
+  apply    bring it up from what is already on the NAS
+  render   write deploy-out/docker-compose.nas.yml and stop
+  check      what is running, and whether it's reachable over the LAN
+  logs       follow vault-ask's log
+  ui-logs    follow the third-party UI's log
+
+  --no-apply   stop after ship
+
+Real values live in the git-ignored .deploy.env — see deploy.env.example.
+USAGE
+  exit 1
+}
+
+VERB=""
+while [ $# -gt 0 ]; do
+  if nas_global_flag "$1"; then :
+  elif [ -z "$VERB" ]; then VERB="$1"
+  else echo "Unexpected argument: $1" >&2; exit 2
+  fi
+  shift
+done
+
+case "${VERB:-up}" in
+  ship)       do_ship ;;
+  apply)      do_apply ;;
+  render)     do_render ;;
+  check)      do_check ;;
+  logs)       do_logs ;;
+  ui-logs|webui-logs) do_webui_logs ;;
+  up)     do_ship
+          if $NO_APPLY; then echo; echo "--no-apply: shipped, nothing restarted."; else do_apply; fi ;;
+  help|-h|--help) usage ;;
+  *) echo "✗ Unknown verb: ${VERB}" >&2; usage ;;
+esac

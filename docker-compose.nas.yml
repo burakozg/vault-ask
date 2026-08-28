@@ -1,0 +1,135 @@
+# The NAS deployment — vault-ask itself, plus one third-party chat UI kept
+# for comparison against vault-ask's own /chat page. No separate database
+# of vault-ask's own (state is /data/index.sqlite, bind-mounted); the UI
+# keeps its conversations in browser localStorage and stores nothing.
+#
+# Open WebUI used to be that UI. It was replaced: 5.09 GB and ~16 minutes
+# of cold Python imports per recreate, for a torch/langchain/chromadb RAG
+# stack that is dead weight here because vault-ask IS the retrieval layer.
+# Its data directory is left on disk (webui-data/) so the decision is
+# reversible — nothing was deleted.
+#
+# Shipped by `./deploy` and brought up with `docker compose up -d` over ssh.
+# Not a Container Station "Application" — see homelab/README.md for why none
+# of these projects are any more.
+#
+# BOTH containers listen — vault-ask serves the API *and* its own /chat page,
+# and the third-party UI is the thing being compared against it — so both get
+# their own qnet address, not just outbound access to the vault.
+#
+# vault-ask <- UI traffic goes over `internal`, a private bridge, NOT
+# through either container's qnet address. This NAS's macvlan has no embedded
+# DNS and container-to-container traffic between two macvlan addresses has
+# been observed to fail outright even by IP (homelab/README.md) — qnet is for
+# the LAN's benefit, not for containers talking to each other. `internal` is
+# not Docker's `internal: true` (which would block egress); vault-ask itself
+# needs real internet access, for generation and for the web fallback.
+#
+# MAC PINNED, per network, per container. Docker randomises the MAC on every
+# `create` for macvlan (unlike bridge networks, where it derives one from the
+# IP), and the router then keeps answering for the old one — the container
+# comes back healthy and unreachable inbound for minutes. ./deploy fills every
+# placeholder in from .deploy.env, so the real addresses never land in this
+# tracked file.
+
+name: vault-ask
+
+services:
+  vault-ask:
+    image: vault-ask:nas
+    container_name: vault-ask
+    restart: unless-stopped
+
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+    volumes:
+      # The SQLite index (losing it costs a full re-embed in money, never in
+      # correctness — README "Deployment") and the admin console's
+      # overrides.json, at the shared default path /data/overrides.json.
+      - /share/Container/vault-ask/data:/data
+
+    env_file:
+      # VAULT_COUCHDB_PASSWORD, OPENROUTER_API_KEY, ADMIN_API_KEY. Never in
+      # this file — Container Station showed stored YAML in plaintext, and a
+      # compose file in a repo is worse.
+      - /share/Container/vault-ask/.env
+
+    environment:
+      TZ: Europe/Stockholm
+      VAULTASK_VAULT__COUCHDB_URL: "http://APP_VAULT_URL_PLACEHOLDER:5984"
+      VAULTASK_VAULT__USER: admin
+      # A LAN machine running Ollama — see OLLAMA-SETUP.md. Not this
+      # container: embedding stays local to wherever that machine is, which
+      # is very likely not the NAS itself.
+      VAULTASK_MODELS__EMBEDDING_BASE_URL: "http://APP_EMBEDDING_HOST_PLACEHOLDER:11434"
+
+    networks:
+      internal: {}
+      qnet-static-eth1-dc7e3a:
+        ipv4_address: APP_LAN_IP_PLACEHOLDER
+        mac_address: APP_MAC_PLACEHOLDER
+
+  # A THIRD UI, deployed for comparison — see README "Choosing a chat UI".
+  #
+  # There are three ways to talk to vault-ask right now, on purpose:
+  #   /chat on vault-ask itself   11 KB, no container, instant
+  #   this (NextChat)             278 MB, ~12 s start
+  #   Open WebUI                  5.09 GB, ~16 min start  <- replaced by this
+  #
+  # NextChat won the survey on the only criterion that could be tested: it is
+  # the one thin option verified working against vault-ask end to end. Hollama
+  # is smaller (54 MB compressed vs 63 MB) but its tags are incoherent — 1.0.6
+  # is from 2024, older than :latest — and nothing in the shipped bundle
+  # advertises OpenAI-compatible support. LibreChat is 832 MB and needs MongoDB
+  # and Meilisearch, so it is not in the "thin" category at all.
+  #
+  # KNOWN AND ACCEPTED: this image is stale. v2.16.1 was pushed 2025-07-29 and
+  # is the newest tag under the reachable name; the project renamed to NextChat
+  # and its new images are not pullable from here. That staleness is not
+  # incidental to the comparison — it IS the comparison. The thin third-party
+  # options in this space are largely unmaintained, which is the strongest
+  # argument for /chat, whose upstream is this repo.
+  #
+  # Store is browser localStorage: no database, no accounts, no migrations,
+  # nothing on disk to lose. That is most of why it starts in seconds.
+  nextchat:
+    image: docker.io/yidadaa/chatgpt-next-web@sha256:cec38cc0fea1e60cd599b4ecda3a6a38062284ae27d15ed32e0a45e74675027d
+    container_name: vault-ask-nextchat
+    restart: unless-stopped
+    # No depends_on — see the note that used to live on open-webui: compose
+    # cascades recreation to dependents, and that single line cost ~16 minutes
+    # on every deploy. Cheap here, but the coupling is still pointless.
+
+    environment:
+      TZ: Europe/Stockholm
+      # Service name over `internal`, not a qnet address — the one network on
+      # this NAS where container-to-container DNS works (see the file header).
+      # NextChat appends /v1 itself, so this is the bare origin.
+      BASE_URL: "http://vault-ask:8080"
+      # Not a secret: vault-ask's shim checks nothing. Committed because it
+      # guards nothing; a real secret would not be.
+      OPENAI_API_KEY: "vault-ask-local"
+      # Without this the model picker lists OpenAI's whole catalogue, none of
+      # which exists here — vault-ask advertises exactly one id.
+      CUSTOM_MODELS: "-all,+vault-ask"
+      DEFAULT_MODEL: "vault-ask"
+      HIDE_USER_API_KEY: "1"
+
+    networks:
+      internal: {}
+      qnet-static-eth1-dc7e3a:
+        ipv4_address: WEBUI_LAN_IP_PLACEHOLDER
+        mac_address: WEBUI_MAC_PLACEHOLDER
+
+networks:
+  # Created and owned by Container Station, not by compose — compose only joins
+  # it, and must not try to define its subnet or parent interface.
+  qnet-static-eth1-dc7e3a:
+    external: true
+  internal:
+    driver: bridge
+    internal: false # needs egress — generation and web fallback both leave the house

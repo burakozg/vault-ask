@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Ask the vault · vault-ask</title>
+<!--
+  The chat UI, served by vault-ask itself.
+
+  This replaces Open WebUI, which cost a 5.09 GB image and ~15m35s of cold
+  Python imports on every recreate for a torch / sentence-transformers /
+  langchain / chromadb stack that was entirely dead weight here — vault-ask
+  IS the retrieval layer, so none of that was ever used. What Open WebUI
+  actually provided was a chat box, which is this file.
+
+  Same conventions as admin.html: one self-contained file, no CDN, no build
+  step, nothing to install. It POSTs to /v1/chat/completions with stream:true
+  and renders the SSE deltas.
+
+  Note on multi-turn: the whole transcript is shown, but each question is
+  answered independently — vault_ask/api/openai_shim.py::_last_user_message
+  takes only the newest user message, because query rewriting against history
+  is deliberately deferred (README "Open questions"). The UI says so rather
+  than implying a memory that is not there.
+-->
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --ink: #1a1a18; --muted: #6b6b66;
+    --line: #e4e4e0; --accent: #2f5d50; --warn: #8a5a00; --bad: #a3352b; --good: #2f6b3a;
+    --mine: #eef2f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1e2024; --ink: #e8e8e4; --muted: #9a9a94;
+      --line: #2e3138; --accent: #7fbfa8; --warn: #d0a24c; --bad: #e0796b; --good: #7fbf8f;
+      --mine: #23272b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+    padding: .7rem 1rem; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: .98rem; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  .grow { flex: 1; }
+  button {
+    font: inherit; font-size: .85rem; padding: .35rem .7rem; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+
+  /* The sensitivity switch. Labelled by what it decides, not by the wire
+     parameter: `allow_web` inverts (true = restricted to `open` chunks), and a
+     control whose name is the opposite of its effect is a control people get
+     wrong. */
+  .toggle { display: flex; align-items: center; gap: .45rem; font-size: .84rem; cursor: pointer;
+            user-select: none; padding: .3rem .6rem; border: 1px solid var(--line); border-radius: 999px; }
+  .toggle input { margin: 0; }
+  .toggle.on  { border-color: var(--warn); color: var(--warn); }
+  .toggle.off { border-color: var(--good); color: var(--good); }
+
+  main { flex: 1; overflow-y: auto; }
+  .thread { max-width: 780px; margin: 0 auto; padding: 1.25rem 1rem 2rem; display: grid; gap: 1rem; }
+  .turn { display: grid; gap: .3rem; }
+  .who { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+  .bubble { padding: .7rem .9rem; border-radius: 10px; border: 1px solid var(--line);
+            background: var(--panel); white-space: pre-wrap; word-break: break-word; }
+  .turn.user .bubble { background: var(--mine); }
+  .turn.err .bubble { border-color: var(--bad); color: var(--bad); }
+  .cite {
+    display: inline; border-bottom: 1px dotted var(--accent); color: var(--accent);
+    cursor: help; text-decoration: none;
+  }
+  .scope { font-size: .72rem; color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 3rem 1rem; }
+  .empty code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: .1rem .35rem; }
+
+  footer { border-top: 1px solid var(--line); background: var(--panel); padding: .7rem 1rem; }
+  .composer { max-width: 780px; margin: 0 auto; display: flex; gap: .6rem; align-items: flex-end; }
+  textarea {
+    flex: 1; font: inherit; font-size: .95rem; padding: .55rem .7rem; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+    resize: none; max-height: 40vh; min-height: 2.6rem;
+  }
+  .hint { max-width: 780px; margin: .4rem auto 0; font-size: .74rem; color: var(--muted); }
+  .blink::after { content: "▍"; animation: b 1s steps(2) infinite; }
+  @keyframes b { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Ask the vault</h1>
+  <label class="toggle off" id="scopeLabel" title="Whether `personal` notes may be retrieved.">
+    <input type="checkbox" id="personal"> <span id="scopeText">open notes only</span>
+  </label>
+  <span class="grow"></span>
+  <button id="clear">New chat</button>
+  <a href="/admin"><button>Admin</button></a>
+</header>
+
+<main>
+  <div class="thread" id="thread"></div>
+</main>
+
+<footer>
+  <div class="composer">
+    <textarea id="q" rows="1" placeholder="Ask something about your vault…"></textarea>
+    <button class="primary" id="send">Send</button>
+  </div>
+  <div class="hint" id="hint"></div>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const STORE = "vaultask_chat";
+
+  /** Each question is answered on its own — see the comment at the top of this
+   *  file. Kept for display only; never sent as conversational context. */
+  let turns = [];
+  let streaming = false;
+
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+  // vault-ask cites as [[path/to/note.md|Title]] (README "Answering
+  // contract"): path-qualified so it resolves when pasted into Obsidian.
+  // Show the title, keep the path in the tooltip — the raw form is accurate
+  // but unreadable mid-sentence.
+  function render(text) {
+    return esc(text).replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g,
+      (_, path, title) => `<span class="cite" title="${path}">${title}</span>`)
+      .replace(/\[\[([^\]|]+)\]\]/g,
+      (_, path) => `<span class="cite" title="${path}">${path}</span>`);
+  }
+
+  function draw() {
+    const el = $("thread");
+    if (!turns.length) {
+      el.innerHTML = `<div class="empty">
+        Answers come from your vault, with citations you can paste into Obsidian.<br>
+        If the vault has nothing, it says so — <code>The vault is silent on this.</code>
+      </div>`;
+      return;
+    }
+    el.innerHTML = turns.map((t, i) => `
+      <div class="turn ${t.role}${t.error ? " err" : ""}">
+        <div class="who">${t.role === "user" ? "You" : "Vault"}${
+          t.role === "user" && t.personal ? ' <span class="scope">· incl. personal</span>' : ""}</div>
+        <div class="bubble${t.streaming ? " blink" : ""}" id="b${i}">${render(t.text)}</div>
+      </div>`).join("");
+    el.parentElement.scrollTop = el.parentElement.scrollHeight;
+  }
+
+  function save() {
+    // Display-only history, capped: this is a convenience, not a record, and
+    // localStorage is small.
+    try { localStorage.setItem(STORE, JSON.stringify(turns.slice(-40))); } catch {}
+  }
+
+  function load() {
+    try { turns = JSON.parse(localStorage.getItem(STORE) || "[]"); } catch { turns = []; }
+    turns.forEach((t) => { t.streaming = false; });
+  }
+
+  function syncScope() {
+    const personal = $("personal").checked;
+    $("scopeLabel").className = `toggle ${personal ? "on" : "off"}`;
+    $("scopeText").textContent = personal ? "including personal notes" : "open notes only";
+    $("hint").innerHTML = personal
+      ? "<strong>Personal notes are in scope.</strong> Keep this off if anything here might reach a web tool. Each question is answered on its own — there is no conversation memory yet."
+      : "Only <code>open</code> notes are retrieved. Each question is answered on its own — there is no conversation memory yet.";
+  }
+
+  async function send() {
+    const text = $("q").value.trim();
+    if (!text || streaming) return;
+    const personal = $("personal").checked;
+
+    $("q").value = ""; $("q").style.height = "auto";
+    turns.push({ role: "user", text, personal });
+    const reply = { role: "assistant", text: "", streaming: true };
+    turns.push(reply);
+    streaming = true; $("send").disabled = true;
+    draw();
+
+    try {
+      const res = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: text }],
+          stream: true,
+          // The wire parameter is the inverse of the switch: allow_web=true
+          // narrows retrieval to `open` chunks.
+          allow_web: !personal,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 200)}`);
+
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        // SSE frames are separated by a blank line; a frame can arrive split
+        // across reads, so keep the remainder buffered.
+        const frames = buf.split("\n\n");
+        buf = frames.pop();
+        for (const frame of frames) {
+          const line = frame.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            const delta = JSON.parse(payload).choices?.[0]?.delta?.content;
+            if (delta) { reply.text += delta; draw(); }
+          } catch { /* a partial frame is not an error worth surfacing */ }
+        }
+      }
+      if (!reply.text) reply.text = "(no answer returned)";
+    } catch (err) {
+      reply.text = String(err.message || err);
+      reply.error = true;
+    } finally {
+      reply.streaming = false;
+      streaming = false; $("send").disabled = false;
+      draw(); save(); $("q").focus();
+    }
+  }
+
+  $("send").addEventListener("click", send);
+  $("q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  $("q").addEventListener("input", (e) => {
+    e.target.style.height = "auto";
+    e.target.style.height = `${e.target.scrollHeight}px`;
+  });
+  $("personal").addEventListener("change", syncScope);
+  $("clear").addEventListener("click", () => {
+    if (turns.length && !confirm("Clear this chat?")) return;
+    turns = []; save(); draw();
+  });
+
+  load(); draw(); syncScope(); $("q").focus();
+})();
+</script>
+</body>
+</html>

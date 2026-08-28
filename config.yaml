@@ -1,0 +1,105 @@
+# vault-ask — non-secret configuration.
+# Secrets belong in .env / environment only (see .env.example).
+# Env vars override these values: VAULTASK_<SECTION>__<KEY> (double underscore
+# nests), e.g. VAULTASK_RETRIEVAL__FINAL_TOP_K=10.
+
+corpus:
+  include:
+    - "**/*.md"
+  exclude:
+    - "00 inbox/**"
+    - "**/.trash/**"
+
+sensitivity:
+  # Matched with fnmatchcase — CASE-SENSITIVE, against the note's real `path`
+  # (which preserves case), not its CouchDB `_id` (which LiveSync lowercases).
+  # These must name folders that actually exist: three earlier patterns
+  # ("30 journal/**", "40 people/**", "50 tastings/**") matched nothing in this
+  # vault, so every one of 2,254 notes classified `open` and the whole
+  # allow_web gate guarded an empty set. ingest now warns on a zero-match
+  # pattern so that cannot recur silently.
+  personal_paths:
+    - "Tastings/**"
+    - "30 projects/**"
+  frontmatter_key: sensitivity
+
+# The vault's own CouchDB — the same one Self-hosted LiveSync replicates
+# against. Deployment topology, so the URL is deployment-set
+# (VAULTASK_VAULT__COUCHDB_URL) rather than committed here; a placeholder
+# keeps this file bootable for tests and dry runs that never touch the vault.
+vault:
+  couchdb_url: null
+  db: tastings
+  user: vaultask
+  timeout_s: 30
+
+# Embedding runs local, always (see README "Models" and OLLAMA-SETUP.md) — it
+# is the one call that touches every note in the vault, including the
+# `personal` ones. embedding_base_url is deployment topology, not committed
+# here: set VAULTASK_MODELS__EMBEDDING_BASE_URL to the LAN address of the
+# machine running Ollama.
+models:
+  generation: openrouter/google/gemini-2.5-flash
+  rerank: openrouter/google/gemini-2.5-flash-lite
+  embedding: ollama/bge-m3
+  embedding_base_url: null
+  embedding_dim: 1024
+
+chunking:
+  target_tokens: 1000
+  hard_split_tokens: 2000
+
+retrieval:
+  vector_top_k: 40
+  fts_top_k: 40
+  fusion_top_k: 20
+  # A real off switch — graph_max_siblings: 0 does NOT disable expansion
+  # (topic notes are still injected). See config.py::RetrievalConfig.
+  graph_enabled: true
+  graph_max_siblings: 5
+  graph_discount: 0.7
+  # How many of final_top_k expanded chunks may take. Measured: without a
+  # quota they displaced direct hits 1:1, up to 6 of 8 slots.
+  graph_max_slots: 2
+  rerank_top_k: 30
+  final_top_k: 8
+
+# Web fallback. OFF by default — this is the only component that sends
+# anything outside the house. It can only ever run when allow_web is true,
+# which is exactly the mode where retrieval is restricted to `open` chunks:
+# gating both on one flag is what keeps a `personal` chunk out of any context
+# that might also carry web content. Note your typed question is sent to the
+# search provider verbatim; no setting changes that.
+web:
+  # On for this deployment. The code default is false — an operator who has
+  # not thought about it should get a vault-only system — but this vault's
+  # owner asked for web supplementation, so it is on here. Toggle it at
+  # /admin without a redeploy; it takes effect on the next restart.
+  enabled: true
+  max_results: 3
+  region: wt-wt
+  # Measured from the NAS container: 20.2s cold, 8.4s warm. An 8s timeout
+  # expired on every first query and degraded silently to vault-only.
+  timeout_s: 25
+  # "Thin vault coverage", not "vault silent" — with ~2,250 notes FTS returns
+  # something for nearly any question, so a silence trigger would never fire.
+  # Both values are unmeasured guesses; see scripts/measure_web_trigger.py.
+  thin_hits: 3
+  # Nearest-chunk distance in embedding space, not a fused-score threshold:
+  # RRF is rank-based, so the top hit scores 1/61 whether the match is perfect
+  # or nonsense. Measured on this vault (bge-m3, L2): covered 0.815-0.955,
+  # not covered 1.022-1.129. Re-measure with scripts/measure_web_trigger.py.
+  thin_distance: 1.0
+
+index:
+  db_path: /data/index.sqlite
+  run_on_startup: true
+  refresh_interval_s: 3600
+
+api:
+  host: 0.0.0.0
+  port: 8080
+
+logging:
+  level: INFO
+  format: console

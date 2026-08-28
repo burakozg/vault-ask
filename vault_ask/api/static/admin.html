@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Admin · vault-ask</title>
+<!--
+  Admin console. config.yaml (plus environment variables) stays the declared
+  baseline; changes made here are stored as overrides in overrides.json and
+  applied at the next restart — not live. Settings is built once at process
+  start, and every reader already holds a reference to it, so a "live" edit
+  here would only be true for readers that happen to re-check.
+
+  Deliberately one self-contained file with no external requests: this
+  service is LAN-only and has no business fetching a CDN. The page itself
+  carries no data — the API key is entered once and held in sessionStorage,
+  sent as X-API-Key on every request, so the shell can be served
+  unauthenticated while the data behind it is not.
+-->
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --ink: #1a1a18; --muted: #6b6b66;
+    --line: #e4e4e0; --accent: #2f5d50; --warn: #8a5a00; --bad: #a3352b; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1e2024; --ink: #e8e8e4; --muted: #9a9a94;
+      --line: #2e3138; --accent: #7fbfa8; --warn: #d0a24c; --bad: #e0796b; --good: #7fbf8f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+    padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  h1 { font-size: 1.05rem; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  a { color: var(--accent); }
+  main { padding: 1.25rem; max-width: 820px; margin: 0 auto; display: grid; gap: 1rem; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--muted); margin: 0 0 .75rem; font-weight: 650; }
+  .sub { color: var(--muted); font-size: .82rem; }
+  label { display: block; font-size: .82rem; color: var(--muted); margin-bottom: .25rem; }
+  input {
+    font: inherit; font-size: .92rem; padding: .4rem .55rem; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%;
+  }
+  select {
+    font: inherit; font-size: .92rem; padding: .4rem .55rem; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%;
+  }
+  input.ovr { border-color: var(--warn); }
+  .field { margin-bottom: .8rem; }
+  .field:last-child { margin-bottom: 0; }
+  .fieldhead { display: flex; justify-content: space-between; align-items: baseline; }
+  .pill { font-size: .7rem; padding: .08rem .45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.on { color: var(--warn); border-color: currentColor; }
+  .grid { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  button {
+    font: inherit; font-size: .88rem; padding: .45rem .85rem; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  #msg { padding: .5rem .75rem; border-radius: 7px; font-size: .85rem; display: none; }
+  #msg.show { display: block; }
+  #msg.err { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  #msg.ok { background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--good); }
+  #pending {
+    padding: .6rem .8rem; border-radius: 7px; font-size: .84rem;
+    background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn);
+  }
+  #gate { padding: 2rem 1.25rem; max-width: 420px; margin: 3rem auto; }
+  #gate input { margin-bottom: .6rem; }
+  pre { margin: 0; font-size: .8rem; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div id="gate" hidden>
+  <h1>vault-ask admin</h1>
+  <p class="sub">Enter the admin API key. Kept in this tab only.</p>
+  <input type="password" id="key" placeholder="API key">
+  <button class="primary" id="unlock">Unlock</button>
+  <p class="sub" id="gateErr" style="color:var(--bad)"></p>
+</div>
+
+<div id="app" hidden>
+<header>
+  <h1>vault-ask admin</h1>
+  <span style="flex:1"></span>
+  <button id="reload">Reload</button>
+  <button id="forget">Forget key</button>
+</header>
+
+<main>
+  <div id="msg"></div>
+  <div id="pending" hidden>
+    Saved changes are waiting for a restart —
+    <code>./deploy check</code>-adjacent restart of the <code>vault-ask</code>
+    container (or however you started it). Nothing here takes effect until then.
+  </div>
+
+  <section>
+    <h2>Generation model</h2>
+    <p class="sub" style="margin:-.35rem 0 .8rem">
+      Answers the question once retrieval is done — a litellm model id, e.g.
+      <code>openrouter/google/gemini-2.5-flash</code>. Everything else litellm
+      touches (embedding, rerank) is deployment topology and stays in
+      <code>config.yaml</code>.
+    </p>
+    <div class="field">
+      <div class="fieldhead">
+        <label for="f-generation">models.generation</label>
+        <span class="pill" id="p-generation">file default</span>
+      </div>
+      <input id="f-generation">
+    </div>
+  </section>
+
+  <section>
+    <h2>Retrieval tuning</h2>
+    <p class="sub" style="margin:-.35rem 0 .8rem">
+      Pipeline widths — see the README "Retrieval" section for the shape these
+      drive. <code>rerank_top_k</code> is not here: no rerank step is wired
+      into the pipeline yet, so exposing that knob would change nothing.
+    </p>
+    <div class="grid" id="retrieval"></div>
+  </section>
+
+  <section>
+    <h2>Web fallback</h2>
+    <p class="sub" style="margin:-.35rem 0 .8rem">
+      Supplements a thin vault answer with web results, kept under their own
+      heading and cited by URL. It can only ever run when
+      <em>include personal notes</em> is <strong>off</strong> in the chat &mdash;
+      the same switch that admits the web excludes your personal notes, so the
+      two are never in one context. <strong>Your typed question is sent to the
+      search provider</strong>; no setting changes that. When it fires is
+      decided by measured vault coverage and stays in <code>config.yaml</code>.
+    </p>
+    <div class="grid" id="web"></div>
+  </section>
+
+  <section>
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
+      <button id="save" class="primary">Save changes</button>
+      <button id="reset">Discard all overrides</button>
+      <span class="sub">Validated the same way config.yaml itself is, before anything is stored.</span>
+    </div>
+    <pre id="raw" style="margin-top:.8rem"></pre>
+  </section>
+</main>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const KEY_NAME = "vaultask_admin_key";
+  const $ = (id) => document.getElementById(id);
+  const key = () => sessionStorage.getItem(KEY_NAME) || "";
+
+  const WEB_FIELDS = [
+    ["enabled", "enabled", "bool"],
+    ["max_results", "max_results", "int"],
+  ];
+
+  const RETRIEVAL_FIELDS = [
+    // A real off switch for graph expansion. graph_max_siblings=0 is NOT one:
+    // topic notes are injected independently of the sibling query.
+    ["graph_enabled", "graph_enabled", "bool"],
+    ["vector_top_k", "vector_top_k", "int"],
+    ["fts_top_k", "fts_top_k", "int"],
+    ["fusion_top_k", "fusion_top_k", "int"],
+    ["graph_max_siblings", "graph_max_siblings", "int"],
+    ["graph_discount", "graph_discount", "float"],
+    ["graph_max_slots", "graph_max_slots", "int"],
+    ["final_top_k", "final_top_k", "int"],
+  ];
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      ...options,
+      headers: {
+        "X-API-Key": key(),
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+    });
+    if (res.status === 401) { lock("Key rejected."); throw new Error("unauthorised"); }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const d = body.detail;
+      throw new Error(typeof d === "string" ? d : JSON.stringify(d || `HTTP ${res.status}`));
+    }
+    return body;
+  }
+
+  function say(text, kind = "ok") {
+    const el = $("msg");
+    el.textContent = text;
+    el.className = `show ${kind}`;
+    if (kind === "ok") setTimeout(() => { el.className = ""; }, 8000);
+  }
+
+  function renderSection(elId, prefix, fields, data) {
+    const el = $(elId);
+    el.innerHTML = "";
+    for (const [key, label, kind] of fields) {
+      const entry = data[key];
+      const overridden = entry.override !== null && entry.override !== undefined;
+      const div = document.createElement("div");
+      div.className = "field";
+      div.innerHTML = `
+        <div class="fieldhead">
+          <label for="f-${key}">${prefix}.${label}</label>
+          <span class="pill${overridden ? " on" : ""}">${overridden ? "overridden" : "file default"}</span>
+        </div>
+        ${kind === "bool"
+          ? `<select id="f-${key}">
+               <option value="true" ${(overridden ? entry.override : entry.active) ? "selected" : ""}>true</option>
+               <option value="false" ${(overridden ? entry.override : entry.active) ? "" : "selected"}>false</option>
+             </select>`
+          : `<input id="f-${key}" type="number" ${kind === "float" ? 'step="0.01"' : 'step="1"'}
+               value="${overridden ? entry.override : entry.active}">`}`;
+      el.appendChild(div);
+    }
+    for (const [key, , kind] of fields) {
+      $(`f-${key}`).addEventListener(kind === "bool" ? "change" : "input", markDirty);
+    }
+  }
+
+  // Only fields the user actually edited are sent. Sending every non-empty
+  // field instead meant changing one knob silently pinned the other six at
+  // their current values as overrides — so a later config.yaml change to any
+  // of them would be masked by an override nobody knowingly set.
+  const dirty = new Set();
+
+  function markDirty(e) { dirty.add(e.target.id.replace(/^f-/, "")); }
+
+  function collect() {
+    const body = {};
+    if (dirty.has("generation")) {
+      const generation = $("f-generation").value.trim();
+      if (generation) body.models = { generation };
+    }
+
+    const gather = (fields) => {
+      const out = {};
+      for (const [key, , kind] of fields) {
+        if (!dirty.has(key)) continue;
+        const raw = $(`f-${key}`).value;
+        if (raw === "") continue;
+        out[key] =
+          kind === "bool" ? raw === "true" : kind === "float" ? parseFloat(raw) : parseInt(raw, 10);
+      }
+      return out;
+    };
+    const retrieval = gather(RETRIEVAL_FIELDS);
+    if (Object.keys(retrieval).length) body.retrieval = retrieval;
+    const web = gather(WEB_FIELDS);
+    if (Object.keys(web).length) body.web = web;
+    return body;
+  }
+
+  let current = null;
+
+  async function load() {
+    try {
+      current = await api("/admin/config");
+      dirty.clear();
+      $("f-generation").value = current.models.generation.override ?? current.models.generation.active;
+      $("p-generation").textContent = current.models.generation.override !== null ? "overridden" : "file default";
+      $("p-generation").className = `pill${current.models.generation.override !== null ? " on" : ""}`;
+      renderSection("retrieval", "retrieval", RETRIEVAL_FIELDS, current.retrieval);
+      renderSection("web", "web", WEB_FIELDS, current.web);
+      $("pending").hidden = !current.pending_restart;
+    } catch (err) {
+      if (err.message !== "unauthorised") say(err.message, "err");
+    }
+  }
+
+  async function save() {
+    try {
+      const payload = collect();
+      if (!Object.keys(payload).length) { say("No changes to save."); return; }
+      const body = await api("/admin/config", { method: "PUT", body: JSON.stringify(payload) });
+      $("raw").textContent = JSON.stringify(body, null, 2);
+      say(body.detail);
+      load();
+    } catch (err) {
+      $("raw").textContent = err.message;
+      say(`Rejected: ${err.message}`, "err");
+    }
+  }
+
+  async function reset() {
+    if (!confirm("Discard every override and return to config.yaml on next restart?")) return;
+    try {
+      const body = await api("/admin/config", { method: "DELETE" });
+      say(body.detail);
+      load();
+    } catch (err) { say(err.message, "err"); }
+  }
+
+  async function unlock() {
+    const value = $("key").value.trim();
+    if (!value) return;
+    sessionStorage.setItem(KEY_NAME, value);
+    try { await api("/admin/config"); start(); }
+    catch { sessionStorage.removeItem(KEY_NAME); $("gateErr").textContent = "That key was rejected."; }
+  }
+
+  function lock(reason) {
+    sessionStorage.removeItem(KEY_NAME);
+    $("app").hidden = true; $("gate").hidden = false;
+    $("gateErr").textContent = reason || "";
+  }
+
+  function start() { $("gate").hidden = true; $("app").hidden = false; load(); }
+
+  $("f-generation").addEventListener("input", markDirty);
+  $("save").addEventListener("click", save);
+  $("reset").addEventListener("click", reset);
+  $("reload").addEventListener("click", load);
+  $("forget").addEventListener("click", () => lock("Key cleared."));
+  $("unlock").addEventListener("click", unlock);
+  $("key").addEventListener("keydown", (e) => { if (e.key === "Enter") unlock(); });
+
+  if (key()) start(); else $("gate").hidden = false;
+})();
+</script>
+</body>
+</html>

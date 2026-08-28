@@ -1,0 +1,20 @@
+# Local deploy config (real NAS host/IPs — see deploy.env.example)
+.deploy.env*
+deploy-out/
+
+# Secrets
+.env
+!.env.example
+
+# Non-secret local config override
+config.local.yaml
+
+# Runtime state (the SQLite index — see vault_ask.db)
+data/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
