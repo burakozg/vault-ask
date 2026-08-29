@@ -24,8 +24,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from ..config import Settings, overrides_path
+from ..config import GENERATION_SUGGESTIONS, Settings, overrides_path
 from ..overrides import OVERRIDABLE_KEYS, read_overrides, write_overrides
+from ..web import PROVIDER_ENV, PROVIDER_KEYS, provider_available
 from .admin_auth import require_api_key
 
 log = logging.getLogger("vault_ask.api.admin")
@@ -109,6 +110,19 @@ async def read_config(request: Request) -> dict[str, Any]:
             }
             for key in sorted(OVERRIDABLE_KEYS["web"])
         },
+        # Choices the page offers, so the UI has no list of its own to drift
+        # from. `available` is what makes an unusable provider visibly
+        # unselectable instead of a save that quietly returns nothing.
+        "web_providers": [
+            {
+                "name": name,
+                "available": provider_available(cfg, name),
+                "needs_key": PROVIDER_KEYS[name] is not None,
+                "env_var": PROVIDER_ENV.get(name),
+            }
+            for name in PROVIDER_KEYS
+        ],
+        "generation_suggestions": list(GENERATION_SUGGESTIONS),
         "editable_keys": {k: sorted(v) for k, v in OVERRIDABLE_KEYS.items()},
         "pending_restart": stored != _boot_overrides(request),
     }
@@ -128,6 +142,21 @@ async def write_config(request: Request, body: Annotated[ConfigIn, Body()]) -> d
         new_overrides["retrieval"] = {**new_overrides.get("retrieval", {}), **body.retrieval}
     if body.web is not None:
         _validate_section("web", cfg.web, body.web)
+        chosen = body.web.get("provider")
+        if chosen is not None and not provider_available(cfg, str(chosen)):
+            # Rejected here rather than saved and discovered after a restart,
+            # when the only symptom would be web results silently vanishing.
+            # The key itself is not settable from here by design — secrets are
+            # environment-only (vault_ask/overrides.py).
+            env = PROVIDER_ENV.get(str(chosen), "its API key")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{chosen!r} has no API key configured, so selecting it would "
+                    f"silently return no results. Set {env} in .env and redeploy, "
+                    "then choose it here."
+                ),
+            )
         new_overrides["web"] = {**new_overrides.get("web", {}), **body.web}
 
     write_overrides(overrides_path(), new_overrides)

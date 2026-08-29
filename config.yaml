@@ -76,6 +76,10 @@ web:
   # owner asked for web supplementation, so it is on here. Toggle it at
   # /admin without a redeploy; it takes effect on the next restart.
   enabled: true
+  # duckduckgo | tavily | brave. The latter two need an API key in .env
+  # (VAULTASK_TAVILY_API_KEY / VAULTASK_BRAVE_API_KEY); the admin console
+  # shows which are usable and refuses to select one that is not.
+  provider: duckduckgo
   max_results: 3
   region: wt-wt
   # Measured from the NAS container: 20.2s cold, 8.4s warm. An 8s timeout

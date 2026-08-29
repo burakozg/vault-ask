@@ -120,7 +120,13 @@
         <label for="f-generation">models.generation</label>
         <span class="pill" id="p-generation">file default</span>
       </div>
-      <input id="f-generation">
+      <input id="f-generation" list="modelList" autocomplete="off">
+      <datalist id="modelList"></datalist>
+      <p class="sub" style="margin:.35rem 0 0">
+        Suggestions are a shortlist, not a limit &mdash; any litellm-routable id
+        works. Browse the full catalogue at
+        <code>openrouter.ai/models</code>.
+      </p>
     </div>
   </section>
 
@@ -145,6 +151,14 @@
       search provider</strong>; no setting changes that. When it fires is
       decided by measured vault coverage and stays in <code>config.yaml</code>.
     </p>
+    <div class="field">
+      <div class="fieldhead">
+        <label for="f-provider">web.provider</label>
+        <span class="pill" id="p-provider">file default</span>
+      </div>
+      <select id="f-provider"></select>
+      <p class="sub" id="providerNote" style="margin:.35rem 0 0"></p>
+    </div>
     <div class="grid" id="web"></div>
   </section>
 
@@ -236,6 +250,34 @@
     }
   }
 
+  function renderModelSuggestions(ids) {
+    $("modelList").innerHTML = ids.map((i) => `<option value="${esc(i)}">`).join("");
+  }
+
+  // A provider with no API key is shown but not selectable. Letting it be
+  // chosen would save fine and then return nothing after the next restart,
+  // with no symptom pointing at the cause.
+  function renderProviders(providers, entry) {
+    const chosen = entry.override ?? entry.active;
+    const sel = $("f-provider");
+    sel.innerHTML = providers.map((p) => {
+      const label = p.available ? p.name : `${p.name} — needs ${p.env_var || "an API key"}`;
+      return `<option value="${esc(p.name)}"${p.available ? "" : " disabled"}` +
+             `${p.name === chosen ? " selected" : ""}>${esc(label)}</option>`;
+    }).join("");
+    const overridden = entry.override !== null && entry.override !== undefined;
+    $("p-provider").textContent = overridden ? "overridden" : "file default";
+    $("p-provider").className = `pill${overridden ? " on" : ""}`;
+
+    const unusable = providers.filter((p) => !p.available);
+    $("providerNote").innerHTML = unusable.length
+      ? `Greyed out until a key is set in <code>.env</code> and redeployed: ` +
+        unusable.map((p) => `<code>${esc(p.env_var || p.name)}</code>`).join(", ") +
+        `. Keys are never settable from this page &mdash; secrets stay in the environment.`
+      : "All providers have a key configured.";
+    sel.addEventListener("change", markDirty);
+  }
+
   // Only fields the user actually edited are sent. Sending every non-empty
   // field instead meant changing one knob silently pinned the other six at
   // their current values as overrides — so a later config.yaml change to any
@@ -265,6 +307,7 @@
     const retrieval = gather(RETRIEVAL_FIELDS);
     if (Object.keys(retrieval).length) body.retrieval = retrieval;
     const web = gather(WEB_FIELDS);
+    if (dirty.has("provider")) web.provider = $("f-provider").value;
     if (Object.keys(web).length) body.web = web;
     return body;
   }
@@ -280,6 +323,8 @@
       $("p-generation").className = `pill${current.models.generation.override !== null ? " on" : ""}`;
       renderSection("retrieval", "retrieval", RETRIEVAL_FIELDS, current.retrieval);
       renderSection("web", "web", WEB_FIELDS, current.web);
+      renderModelSuggestions(current.generation_suggestions || []);
+      renderProviders(current.web_providers || [], current.web.provider);
       $("pending").hidden = !current.pending_restart;
     } catch (err) {
       if (err.message !== "unauthorised") say(err.message, "err");

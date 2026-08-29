@@ -83,6 +83,7 @@ ship_secrets() {
   tmp="$(mktemp -t vault-ask-env)"
   # shellcheck disable=SC2064
   trap "rm -f '${tmp}'" EXIT
+  # Required: the deploy refuses without all three.
   {
     grep -E '^VAULTASK_VAULT_COUCHDB_PASSWORD=' .env || true
     grep -E '^VAULTASK_OPENROUTER_API_KEY=' .env || true
@@ -90,11 +91,22 @@ ship_secrets() {
   } > "$tmp"
   local n
   n="$(wc -l < "$tmp" | tr -d '[:space:]')"
-  [ "$n" = "3" ] || die "expected 3 secrets in .env, found ${n}"
+  [ "$n" = "3" ] || die "expected 3 required secrets in .env, found ${n}"
+
+  # Optional: search-provider keys. Absent is normal — DuckDuckGo needs none,
+  # and the admin console simply shows the others as unselectable. Counted
+  # separately so a missing optional key can never satisfy the check above.
+  local extra=0
+  for key in VAULTASK_TAVILY_API_KEY VAULTASK_BRAVE_API_KEY; do
+    if grep -qE "^${key}=." .env; then
+      grep -E "^${key}=" .env >> "$tmp"
+      extra=$((extra + 1))
+    fi
+  done
 
   echo "== shipping secrets =="
   nas_put "$tmp" "${NAS_APP_DIR}/.env" 600
-  echo "  ✓ 3 keys, mode 600"
+  echo "  ✓ 3 required + ${extra} optional, mode 600"
   rm -f "$tmp"
 }
 

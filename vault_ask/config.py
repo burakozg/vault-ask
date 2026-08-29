@@ -132,6 +132,33 @@ class ModelsConfig(StrictModel):
     # step 3).
 
 
+#: Suggestions for `models.generation`, offered by the admin console as a
+#: type-ahead. NOT a validation allowlist — the field stays free text, because
+#: any litellm-routable id is legitimate and a closed list would be wrong the
+#: week it shipped.
+#:
+#: Every id here was checked against OpenRouter's live catalogue rather than
+#: recalled, which is the failure mode a hand-written list invites. It will
+#: still go stale: re-check with
+#:   curl -s https://openrouter.ai/api/v1/models | jq -r '.data[].id'
+#: A live fetch was the alternative and was deliberately not taken — it puts a
+#: network call and an outage mode into a page whose job is to work when
+#: things are broken.
+GENERATION_SUGGESTIONS: tuple[str, ...] = (
+    # Fast and cheap, with a context window big enough that retrieval width is
+    # never the constraint. The shipped default.
+    "openrouter/google/gemini-2.5-flash",
+    "openrouter/google/gemini-2.5-flash-lite",
+    "openrouter/google/gemini-2.5-pro",
+    "openrouter/anthropic/claude-haiku-4.5",
+    "openrouter/anthropic/claude-fable-5",
+    "openrouter/deepseek/deepseek-chat-v3.1",
+    "openrouter/meta-llama/llama-3.3-70b-instruct",
+    "openrouter/mistralai/mistral-medium-3-5",
+    "openrouter/qwen/qwen-plus",
+)
+
+
 class ChunkingConfig(StrictModel):
     """Heading-aware chunking targets, in approximate tokens."""
 
@@ -207,6 +234,12 @@ class WebConfig(StrictModel):
     """
 
     enabled: bool = False
+    #: Which search backend. Changeable from the admin console; its API key is
+    #: not — keys are secrets, and secrets here are environment-only (see
+    #: vault_ask/overrides.py). `duckduckgo` needs none and is the default so
+    #: the feature works with nothing to sign up for; the other two need a key
+    #: and the console refuses to select an unusable one.
+    provider: Literal["duckduckgo", "tavily", "brave"] = "duckduckgo"
     #: Deliberately small. Web material is a supplement to the vault, and a
     #: long list of snippets is exactly how it stops being one — the model has
     #: more web text than vault text to work with and the answer tilts.
@@ -346,6 +379,12 @@ class Settings(BaseSettings):
     #: never "open to everyone" — the same fail-closed stance podcast-digest's
     #: own admin key takes.
     admin_api_key: SecretStr | None = None
+    #: Search-provider keys. Environment-only like every other secret here:
+    #: never in config.yaml, never in overrides.json, never settable from the
+    #: admin console. The console reports whether each is *present* so a
+    #: provider that cannot work is visibly unselectable.
+    tavily_api_key: SecretStr | None = None
+    brave_api_key: SecretStr | None = None
 
     @classmethod
     def settings_customise_sources(

@@ -163,11 +163,34 @@ head across five repos.
 
 ## Admin console
 
-`GET /admin` — a browser-based console for changing the two knobs worth
-changing without a `config.yaml` edit and a redeploy: `models.generation`
-(which model answers questions) and `retrieval.*` tuning (`graph_enabled`,
-`vector_top_k`, `fts_top_k`, `fusion_top_k`, `graph_max_siblings`,
-`graph_discount`, `final_top_k`). Same shape as `podcast-digest`'s own admin console: a single
+`GET /admin` — a browser-based console for the settings worth changing without
+a `config.yaml` edit and a redeploy: **which model answers** (a type-ahead over
+a curated shortlist, but still free text — any litellm-routable id works),
+**which search provider** runs the web fallback (`duckduckgo` / `tavily` /
+`brave`), and `retrieval.*` tuning (`graph_enabled`, `vector_top_k`,
+`fts_top_k`, `fusion_top_k`, `graph_max_siblings`, `graph_discount`,
+`graph_max_slots`, `final_top_k`).
+
+**Provider keys are not settable here, deliberately.** Secrets in this project
+are environment-only — never in `config.yaml`, never in `overrides.json`, never
+in a browser form. DuckDuckGo needs no key and is the default, so the feature
+works with nothing to sign up for. Tavily and Brave appear in the dropdown but
+are **disabled until their key exists**, and selecting one anyway is rejected
+with the env var named:
+
+> `'tavily' has no API key configured, so selecting it would silently return no
+> results. Set VAULTASK_TAVILY_API_KEY in .env and redeploy, then choose it here.`
+
+Refusing beats saving: a stored-but-unusable provider looks fine in the console
+and then returns nothing after the next restart, with no symptom pointing at
+the cause.
+
+The model shortlist (`config.GENERATION_SUGGESTIONS`) was checked against
+OpenRouter's live catalogue rather than recalled — the failure mode a
+hand-written list invites — and it will still go stale; re-check with
+`curl -s https://openrouter.ai/api/v1/models | jq -r '.data[].id'`. A live
+fetch was considered and rejected: it puts a network call and an outage mode
+into a page whose job is to work when things are broken. Same shape as `podcast-digest`'s own admin console: a single
 self-contained HTML file (no CDN, no build step), the admin key entered once
 and held in `sessionStorage`, sent as `X-API-Key` on every request to
 `/admin/config`. The page itself is served unauthenticated — only the data

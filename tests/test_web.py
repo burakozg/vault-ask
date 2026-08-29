@@ -161,7 +161,7 @@ class TestDegradesGracefully:
         def _boom(*a: Any, **k: Any) -> list[WebResult]:
             raise RuntimeError("ddg changed their HTML")
 
-        monkeypatch.setattr(web_module, "_blocking_search", _boom)
+        monkeypatch.setattr(web_module, "_search_duckduckgo", _boom)
         assert await web_module.search(_cfg(), "q") == []
 
     async def test_disabled_short_circuits_without_calling_out(
@@ -170,7 +170,7 @@ class TestDegradesGracefully:
         def _boom(*a: Any, **k: Any) -> list[WebResult]:
             raise AssertionError("must not be called when web.enabled is false")
 
-        monkeypatch.setattr(web_module, "_blocking_search", _boom)
+        monkeypatch.setattr(web_module, "_search_duckduckgo", _boom)
         assert await web_module.search(Settings(web={"enabled": False}), "q") == []
 
     async def test_vault_silent_and_no_web_costs_no_model_call(
@@ -208,3 +208,71 @@ class TestDegradesGracefully:
         answer = await ask(db, _cfg(), "obscure", allow_web=True)
         assert answer.generated is True
         assert len(answer.web) == 1
+
+
+class TestProviderSelection:
+    """Providers are selectable; their keys are not settable from anywhere but
+    the environment. The console must refuse an unusable choice rather than
+    save it and return nothing after the next restart.
+    """
+
+    def test_duckduckgo_needs_no_key(self) -> None:
+        assert web_module.provider_available(Settings(), "duckduckgo") is True
+
+    def test_keyed_providers_unavailable_without_a_key(self) -> None:
+        cfg = Settings()
+        assert web_module.provider_available(cfg, "tavily") is False
+        assert web_module.provider_available(cfg, "brave") is False
+
+    def test_keyed_providers_available_once_the_key_is_set(self) -> None:
+        cfg = Settings(tavily_api_key="tvly-x", brave_api_key="bsa-y")
+        assert web_module.provider_available(cfg, "tavily") is True
+        assert web_module.provider_available(cfg, "brave") is True
+
+    def test_unknown_provider_is_never_available(self) -> None:
+        assert web_module.provider_available(Settings(), "altavista") is False
+
+    async def test_selected_provider_is_the_one_called(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called: list[str] = []
+
+        def _mk(name: str):
+            def _impl(cfg: Settings, query: str, limit: int) -> list[WebResult]:
+                called.append(name)
+                return [WebResult(name, f"https://{name}.test/x", "s")]
+            return _impl
+
+        for name in ("duckduckgo", "tavily", "brave"):
+            monkeypatch.setattr(web_module, f"_search_{name}", _mk(name))
+
+        cfg = Settings(
+            web={"enabled": True, "provider": "tavily"}, tavily_api_key="tvly-x"
+        )
+        results = await web_module.search(cfg, "q")
+        assert called == ["tavily"]
+        assert results[0].url == "https://tavily.test/x"
+
+    async def test_keyless_provider_refuses_rather_than_calling_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reaching the API without a key would 401; refuse locally instead."""
+        def _boom(*a: Any, **k: Any) -> list[WebResult]:
+            raise AssertionError("called a provider with no key configured")
+
+        monkeypatch.setattr(web_module, "_search_tavily", _boom)
+        cfg = Settings(web={"enabled": True, "provider": "tavily"})  # no key
+        assert await web_module.search(cfg, "q") == []
+
+    def test_env_var_names_cover_every_keyed_provider(self) -> None:
+        """The rejection message names the var to set; a provider missing from
+        PROVIDER_ENV would say 'its API key' and help nobody."""
+        keyed = {n for n, f in web_module.PROVIDER_KEYS.items() if f is not None}
+        assert keyed == set(web_module.PROVIDER_ENV)
+
+    def test_secrets_are_not_console_editable(self) -> None:
+        """Keys must never be reachable through overrides.json."""
+        from vault_ask.overrides import OVERRIDABLE_KEYS
+
+        for section in OVERRIDABLE_KEYS.values():
+            assert not any("key" in k for k in section)

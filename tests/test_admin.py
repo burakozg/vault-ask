@@ -224,7 +224,7 @@ class TestWebSection:
     def test_web_section_is_readable(self, client: TestClient) -> None:
         body = client.get("/admin/config", headers=_auth()).json()
         assert body["web"]["enabled"] == {"active": False, "override": None}
-        assert body["editable_keys"]["web"] == ["enabled", "max_results"]
+        assert body["editable_keys"]["web"] == ["enabled", "max_results", "provider"]
 
     def test_can_be_toggled(self, client: TestClient) -> None:
         resp = client.put("/admin/config", headers=_auth(), json={"web": {"enabled": True}})
@@ -238,3 +238,53 @@ class TestWebSection:
         resp = client.put("/admin/config", headers=_auth(), json={"web": {"thin_distance": 5.0}})
         assert resp.status_code == 400
         assert "thin_distance" in resp.json()["detail"]
+
+
+class TestProviderChoices:
+    """The console offers real choices, and refuses one it knows cannot work."""
+
+    def test_reports_every_provider_with_availability(self, client: TestClient) -> None:
+        body = client.get("/admin/config", headers=_auth()).json()
+        by_name = {p["name"]: p for p in body["web_providers"]}
+        assert set(by_name) == {"duckduckgo", "tavily", "brave"}
+        assert by_name["duckduckgo"]["available"] is True
+        assert by_name["duckduckgo"]["needs_key"] is False
+        # No key configured in the test settings.
+        assert by_name["tavily"]["available"] is False
+        assert by_name["tavily"]["env_var"] == "VAULTASK_TAVILY_API_KEY"
+
+    def test_offers_model_suggestions(self, client: TestClient) -> None:
+        body = client.get("/admin/config", headers=_auth()).json()
+        suggestions = body["generation_suggestions"]
+        assert len(suggestions) > 3
+        assert body["models"]["generation"]["active"] in suggestions
+        assert all(s.startswith("openrouter/") for s in suggestions)
+
+    def test_selecting_a_keyless_provider_is_rejected(self, client: TestClient) -> None:
+        """Saving it would look fine and then silently return no web results
+        after the next restart — the failure would point nowhere."""
+        resp = client.put("/admin/config", headers=_auth(), json={"web": {"provider": "tavily"}})
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "VAULTASK_TAVILY_API_KEY" in detail
+
+    def test_selecting_a_keyed_provider_works_once_the_key_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vault_ask.config as config_module
+
+        monkeypatch.setattr(config_module, "_active_overrides_path", tmp_path / "o.json")
+        cfg = Settings(
+            index={"db_path": tmp_path / "index.sqlite"},
+            admin_api_key=ADMIN_KEY,
+            tavily_api_key="tvly-x",
+        )
+        with TestClient(create_app(cfg)) as c:
+            resp = c.put("/admin/config", headers=_auth(), json={"web": {"provider": "tavily"}})
+            assert resp.status_code == 200, resp.text
+            again = c.get("/admin/config", headers=_auth()).json()
+            assert again["web"]["provider"]["override"] == "tavily"
+
+    def test_unknown_provider_is_rejected(self, client: TestClient) -> None:
+        resp = client.put("/admin/config", headers=_auth(), json={"web": {"provider": "altavista"}})
+        assert resp.status_code == 400

@@ -43,7 +43,7 @@ OVERRIDABLE_KEYS: dict[str, frozenset[str]] = {
     # Thresholds stay file-only: they were measured (see WebConfig) and a
     # browser is the wrong place to nudge a number that decides when the vault
     # stops being the only source.
-    "web": frozenset({"enabled", "max_results"}),
+    "web": frozenset({"enabled", "provider", "max_results"}),
     # rerank_top_k is excluded for the same reason as models.rerank above.
     "retrieval": frozenset(
         {
