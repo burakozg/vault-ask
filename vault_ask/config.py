@@ -83,7 +83,7 @@ class VaultConfig(StrictModel):
     """
 
     couchdb_url: str | None = None
-    db: str = Field(default="tastings", pattern=r"^[a-z][a-z0-9_$()+/-]*$")
+    db: str = Field(default="the_brain", pattern=r"^[a-z][a-z0-9_$()+/-]*$")
     user: str = "vaultask"
     timeout_s: float = Field(default=30.0, ge=1.0, le=300.0)
 

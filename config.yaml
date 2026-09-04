@@ -29,7 +29,7 @@ sensitivity:
 # keeps this file bootable for tests and dry runs that never touch the vault.
 vault:
   couchdb_url: null
-  db: tastings
+  db: the_brain
   user: vaultask
   timeout_s: 30
 

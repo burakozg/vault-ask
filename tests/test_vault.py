@@ -10,10 +10,10 @@ green: deleting the `deleted` check, dropping `include_docs=true`, reading
 The payloads below are **captured from the live vault**, not invented, because
 the assumption under test is precisely "what does CouchDB actually return":
 
-    GET /tastings                      -> doc_del_count: 0
-    GET /tastings/_all_docs?limit=5    -> rows[].value == {"rev": "3-<hash>"}
+    GET /the_brain                      -> doc_del_count: 0
+    GET /the_brain/_all_docs?limit=5    -> rows[].value == {"rev": "3-<hash>"}
                                           (no `deleted` key, ever)
-    GET /tastings/<a deleted note>     -> {"deleted": true, "type": "plain", ...}
+    GET /the_brain/<a deleted note>     -> {"deleted": true, "type": "plain", ...}
 
 That combination is the whole point: 1,227 notes are deleted, CouchDB reports
 `doc_del_count: 0`, and none of them carry `deleted` at the row level. LiveSync
@@ -33,7 +33,7 @@ from vault_ask.config import VaultConfig
 from vault_ask.vault import LiveSyncVault, VaultUnavailable
 
 COUCH = "http://couch.local:5984"
-DB = "tastings"
+DB = "the_brain"
 
 
 def _cfg() -> VaultConfig:
