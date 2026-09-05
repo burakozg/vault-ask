@@ -18,8 +18,17 @@ sensitivity:
   # vault, so every one of 2,254 notes classified `open` and the whole
   # allow_web gate guarded an empty set. ingest now warns on a zero-match
   # pattern so that cannot recur silently.
+  #
+  # That warning then earned its keep: "Tastings/**" started matching nothing
+  # on 2026-09-02, when the vault split moved tasting notes to the `hobby`
+  # database — which this app does not read at all. Removed 2026-09-05 rather
+  # than left as a pattern guarding a folder that is not here.
+  #
+  # What remains in this vault is generated or curated technical content
+  # (daily-digest, podcasts, topics, raw, video-summaries, transcripts) plus
+  # "30 projects", which holds infrastructure notes and is the one folder here
+  # worth withholding from a web-enabled answer.
   personal_paths:
-    - "Tastings/**"
     - "30 projects/**"
   frontmatter_key: sensitivity
 
