@@ -150,8 +150,6 @@ GENERATION_SUGGESTIONS: tuple[str, ...] = (
     "openrouter/google/gemini-2.5-flash",
     "openrouter/google/gemini-2.5-flash-lite",
     "openrouter/google/gemini-2.5-pro",
-    "openrouter/anthropic/claude-haiku-4.5",
-    "openrouter/anthropic/claude-fable-5",
     "openrouter/deepseek/deepseek-chat-v3.1",
     "openrouter/meta-llama/llama-3.3-70b-instruct",
     "openrouter/mistralai/mistral-medium-3-5",
