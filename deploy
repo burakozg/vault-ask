@@ -62,10 +62,10 @@ do_render() {
 # instead. Same contract as nas_probe/nas_wait_reachable (same messages, same
 # non-zero-on-failure), just a different transport.
 do_probe_via_traefik() {
-  if nas_ssh "'${NAS_DOCKER_BIN}' exec traefik-1 wget -q -O /dev/null --timeout=5 http://vault-ask:8080/healthz" 2>/dev/null; then
-    echo "✓ vault-ask: up → http://vault-ask:8080 (via Traefik's internal network)"
+  if nas_ssh "'${NAS_DOCKER_BIN}' exec traefik-1 wget -q -O /dev/null --timeout=5 http://vault-ask:80/healthz" 2>/dev/null; then
+    echo "✓ vault-ask: up → http://vault-ask:80 (via Traefik's internal network)"
   else
-    echo "✗ vault-ask: no answer at http://vault-ask:8080/healthz (via Traefik's internal network)"
+    echo "✗ vault-ask: no answer at http://vault-ask:80/healthz (via Traefik's internal network)"
     return 1
   fi
 }

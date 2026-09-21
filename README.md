@@ -656,7 +656,7 @@ up, and confirmed reachable and answering from another machine on the LAN.
 `docker-compose.nas.yml` — not on a dev machine, so it survives the same
 reboots vault-ask does. It gets its own qnet address (`WEBUI_LAN_IP`) for a
 browser to reach; the two containers reach *each other* over a private
-`internal` bridge network by service name (`http://vault-ask:8080/v1`), never
+`internal` bridge network by service name (`http://vault-ask:80/v1`), never
 through either qnet address — this NAS's macvlan has no embedded DNS and
 container-to-container traffic between two macvlan addresses has been
 observed to fail outright even by IP (`homelab/README.md`). Not marked

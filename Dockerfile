@@ -35,11 +35,11 @@ RUN groupadd -g 1000 appuser && useradd -g appuser -u 1000 appuser \
     && mkdir -p /data && chown -R appuser:appuser /data
 USER appuser
 
-EXPOSE 8080
+EXPOSE 80
 
 # Unauthenticated by design (README "How to test it") — fails 503 when the
 # SQLite index itself can't be queried (see api/app.py::healthz).
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=8).status==200 else 1)"
+    CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:80/healthz', timeout=8).status==200 else 1)"
 
 CMD ["python", "-m", "vault_ask", "serve"]

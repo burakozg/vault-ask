@@ -68,6 +68,10 @@ services:
 
     environment:
       TZ: Europe/Stockholm
+      # Every app behind Traefik's central login listens on 80 internally now
+      # — housekeeping, since Traefik already abstracts the port away. See
+      # vault_ask/config.py's APIConfig.port.
+      VAULTASK_API__PORT: "80"
       VAULTASK_VAULT__COUCHDB_URL: "http://APP_VAULT_URL_PLACEHOLDER:5984"
       VAULTASK_VAULT__USER: admin
       # A LAN machine running Ollama — see OLLAMA-SETUP.md. Not this
@@ -115,7 +119,7 @@ services:
       # Service name over `internal`, not a qnet address — the one network on
       # this NAS where container-to-container DNS works (see the file header).
       # NextChat appends /v1 itself, so this is the bare origin.
-      BASE_URL: "http://vault-ask:8080"
+      BASE_URL: "http://vault-ask:80"
       # Not a secret: vault-ask's shim checks nothing. Committed because it
       # guards nothing; a real secret would not be.
       OPENAI_API_KEY: "vault-ask-local"
