@@ -13,10 +13,11 @@
   here would only be true for readers that happen to re-check.
 
   Deliberately one self-contained file with no external requests: this
-  service is LAN-only and has no business fetching a CDN. The page itself
-  carries no data — the API key is entered once and held in sessionStorage,
-  sent as X-API-Key on every request, so the shell can be served
-  unauthenticated while the data behind it is not.
+  service is LAN-only and has no business fetching a CDN. Auth for this
+  whole page (and the /admin/config API behind it) is handled by the
+  reverse proxy in front of the container, not by this app — the browser's
+  proxy-set session cookie rides along on every fetch automatically, so
+  there is no key-entry step or app-level header here.
 -->
 <style>
   :root {
@@ -76,27 +77,16 @@
     padding: .6rem .8rem; border-radius: 7px; font-size: .84rem;
     background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn);
   }
-  #gate { padding: 2rem 1.25rem; max-width: 420px; margin: 3rem auto; }
-  #gate input { margin-bottom: .6rem; }
   pre { margin: 0; font-size: .8rem; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
 </style>
 </head>
 <body>
 
-<div id="gate" hidden>
-  <h1>vault-ask admin</h1>
-  <p class="sub">Enter the admin API key. Kept in this tab only.</p>
-  <input type="password" id="key" placeholder="API key">
-  <button class="primary" id="unlock">Unlock</button>
-  <p class="sub" id="gateErr" style="color:var(--bad)"></p>
-</div>
-
-<div id="app" hidden>
+<div id="app">
 <header>
   <h1>vault-ask admin</h1>
   <span style="flex:1"></span>
   <button id="reload">Reload</button>
-  <button id="forget">Forget key</button>
 </header>
 
 <main>
@@ -176,9 +166,7 @@
 <script>
 (() => {
   "use strict";
-  const KEY_NAME = "vaultask_admin_key";
   const $ = (id) => document.getElementById(id);
-  const key = () => sessionStorage.getItem(KEY_NAME) || "";
 
   const WEB_FIELDS = [
     ["enabled", "enabled", "bool"],
@@ -202,12 +190,10 @@
     const res = await fetch(path, {
       ...options,
       headers: {
-        "X-API-Key": key(),
         ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...(options.headers || {}),
       },
     });
-    if (res.status === 401) { lock("Key rejected."); throw new Error("unauthorised"); }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const d = body.detail;
@@ -327,7 +313,7 @@
       renderProviders(current.web_providers || [], current.web.provider);
       $("pending").hidden = !current.pending_restart;
     } catch (err) {
-      if (err.message !== "unauthorised") say(err.message, "err");
+      say(err.message, "err");
     }
   }
 
@@ -354,31 +340,12 @@
     } catch (err) { say(err.message, "err"); }
   }
 
-  async function unlock() {
-    const value = $("key").value.trim();
-    if (!value) return;
-    sessionStorage.setItem(KEY_NAME, value);
-    try { await api("/admin/config"); start(); }
-    catch { sessionStorage.removeItem(KEY_NAME); $("gateErr").textContent = "That key was rejected."; }
-  }
-
-  function lock(reason) {
-    sessionStorage.removeItem(KEY_NAME);
-    $("app").hidden = true; $("gate").hidden = false;
-    $("gateErr").textContent = reason || "";
-  }
-
-  function start() { $("gate").hidden = true; $("app").hidden = false; load(); }
-
   $("f-generation").addEventListener("input", markDirty);
   $("save").addEventListener("click", save);
   $("reset").addEventListener("click", reset);
   $("reload").addEventListener("click", load);
-  $("forget").addEventListener("click", () => lock("Key cleared."));
-  $("unlock").addEventListener("click", unlock);
-  $("key").addEventListener("keydown", (e) => { if (e.key === "Enter") unlock(); });
 
-  if (key()) start(); else $("gate").hidden = false;
+  load();
 })();
 </script>
 </body>

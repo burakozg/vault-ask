@@ -21,17 +21,16 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..config import GENERATION_SUGGESTIONS, Settings, overrides_path
 from ..overrides import OVERRIDABLE_KEYS, read_overrides, write_overrides
 from ..web import PROVIDER_ENV, PROVIDER_KEYS, provider_available
-from .admin_auth import require_api_key
 
 log = logging.getLogger("vault_ask.api.admin")
 
-router = APIRouter(prefix="/admin/config", dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/admin/config")
 
 
 class ConfigIn(BaseModel):

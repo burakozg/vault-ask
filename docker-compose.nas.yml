@@ -13,9 +13,17 @@
 # Not a Container Station "Application" — see homelab/README.md for why none
 # of these projects are any more.
 #
-# BOTH containers listen — vault-ask serves the API *and* its own /chat page,
-# and the third-party UI is the thing being compared against it — so both get
-# their own qnet address, not just outbound access to the vault.
+# Only the third-party UI still gets a qnet address. vault-ask itself moved
+# to homelab-internal as part of the central-login migration (see
+# homelab-auth/README.md): its own VAULTASK_ADMIN_API_KEY check has been
+# removed from the app entirely, since Traefik's forwardAuth now gates
+# /admin* before any request reaches this container. /chat, /query, /v1/*
+# etc. stay reachable with no login, exactly as before — only the admin
+# surface changed. homelab-internal is a plain bridge, created once and
+# shared with Traefik via `docker network connect`; NextChat keeps talking to
+# vault-ask over `internal` as it always did (a DIFFERENT bridge — this
+# project's own, for its own container-to-container traffic, kept separate
+# from Traefik's).
 #
 # vault-ask <- UI traffic goes over `internal`, a private bridge, NOT
 # through either container's qnet address. This NAS's macvlan has no embedded
@@ -25,11 +33,11 @@
 # not Docker's `internal: true` (which would block egress); vault-ask itself
 # needs real internet access, for generation and for the web fallback.
 #
-# MAC PINNED, per network, per container. Docker randomises the MAC on every
+# MAC PINNED for the UI's qnet network. Docker randomises the MAC on every
 # `create` for macvlan (unlike bridge networks, where it derives one from the
 # IP), and the router then keeps answering for the old one — the container
-# comes back healthy and unreachable inbound for minutes. ./deploy fills every
-# placeholder in from .deploy.env, so the real addresses never land in this
+# comes back healthy and unreachable inbound for minutes. ./deploy fills the
+# placeholder in from .deploy.env, so the real address never lands in this
 # tracked file.
 
 name: vault-ask
@@ -69,9 +77,7 @@ services:
 
     networks:
       internal: {}
-      qnet-static-eth1-dc7e3a:
-        ipv4_address: APP_LAN_IP_PLACEHOLDER
-        mac_address: APP_MAC_PLACEHOLDER
+      homelab-internal: {}
 
   # A THIRD UI, deployed for comparison — see README "Choosing a chat UI".
   #
@@ -127,9 +133,15 @@ services:
 
 networks:
   # Created and owned by Container Station, not by compose — compose only joins
-  # it, and must not try to define its subnet or parent interface.
+  # it, and must not try to define its subnet or parent interface. Only the
+  # third-party UI uses this now; vault-ask itself moved to homelab-internal.
   qnet-static-eth1-dc7e3a:
     external: true
   internal:
     driver: bridge
     internal: false # needs egress — generation and web fallback both leave the house
+  # Created once, shared with Traefik via `docker network connect` — not
+  # created by this compose file, which only joins it. See
+  # homelab-auth/README.md.
+  homelab-internal:
+    external: true

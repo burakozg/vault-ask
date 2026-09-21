@@ -6,18 +6,6 @@ from pathlib import Path
 import pytest
 
 import vault_ask.config as config_module
-from vault_ask.api.admin_auth import reset_throttle
-
-
-@pytest.fixture(autouse=True)
-def _forget_failed_admin_auth() -> None:
-    """The admin auth throttle counts failures per address, in module state.
-
-    Left alone it would leak between tests: a file that exercises a few 401s
-    would make a later test's 401 a 429, and which test broke would depend on
-    the order they ran in.
-    """
-    reset_throttle()
 
 
 @pytest.fixture(autouse=True)

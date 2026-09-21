@@ -99,7 +99,7 @@ rather than by reasoning about them:
 
 | | `/chat` (built in) | NextChat | ~~Open WebUI~~ |
 |---|---|---|---|
-| where | `http://APP_LAN_IP:8080/chat` | `http://WEBUI_LAN_IP:3000` | removed |
+| where | `http://vault-ask.servers.zou/chat` | `http://WEBUI_LAN_IP:3000` | removed |
 | image | none — one 11 KB page | 196 MB (63 MB compressed) | 5.09 GB (1738 MB compressed) |
 | restart → reachable | n/a, part of vault-ask | **31 s** | **16.2 min** |
 | memory | — | 43 MiB | 842 MiB |
@@ -190,13 +190,11 @@ OpenRouter's live catalogue rather than recalled — the failure mode a
 hand-written list invites — and it will still go stale; re-check with
 `curl -s https://openrouter.ai/api/v1/models | jq -r '.data[].id'`. A live
 fetch was considered and rejected: it puts a network call and an outage mode
-into a page whose job is to work when things are broken. Same shape as `podcast-digest`'s own admin console: a single
-self-contained HTML file (no CDN, no build step), the admin key entered once
-and held in `sessionStorage`, sent as `X-API-Key` on every request to
-`/admin/config`. The page itself is served unauthenticated — only the data
-behind it is gated (`vault_ask/api/admin_auth.py`, `hmac.compare_digest`,
-10 failures per address before a 429, unset key fails **closed** with 503,
-never open).
+into a page whose job is to work when things are broken. A single
+self-contained HTML file (no CDN, no build step). `/admin` and `/admin/config`
+carry no auth of their own — both sit behind the reverse proxy in front of
+this container, which gates the whole `/admin*` prefix with its own login
+before a request ever reaches vault-ask.
 
 Deliberately excludes `models.rerank` and `retrieval.rerank_top_k`: no rerank
 step is wired into the pipeline yet (see "Build order" below), and a console
@@ -226,9 +224,7 @@ what this process actually booted with, not whether it differs from the
 shipped defaults — so restarting into an override that exactly restates
 `config.yaml` correctly reports nothing pending.
 
-Set `VAULTASK_ADMIN_API_KEY` (`.env.example`) to a long random value
-(`openssl rand -hex 32`) to enable it — `vault_ask/api/admin.py`,
-`vault_ask/api/admin_auth.py`, `vault_ask/overrides.py`,
+Implemented in `vault_ask/api/admin.py`, `vault_ask/overrides.py`, and
 `vault_ask/api/static/admin.html`.
 
 ## Corpus and sensitivity
@@ -640,10 +636,13 @@ step, where latency per call matters more than privacy.
 ## Deployment
 
 ✅ Compose project on the NAS, deployed over ssh — see `homelab/README.md` for
-the contract, `./deploy` for the verbs. This one **does** listen, on
-`APP_LAN_IP`, and it needs a qnet address regardless: the vault is CouchDB on
-another macvlan address and the NAS host cannot route to its own macvlan
-children. MAC pinned per network, like every other project here.
+the contract, `./deploy` for the verbs. vault-ask itself has no qnet/macvlan
+address any more — as part of the central-login migration it joined
+`homelab-internal`, a bridge shared with Traefik, and is reached only at
+`http://vault-ask.servers.zou` (login required only on `/admin*`; `/chat`,
+`/query`, `/v1/*` etc. stay open, unchanged). The third-party chat UI
+(NextChat, below) is unrelated to that migration and keeps its own qnet
+address with its MAC pinned, same as before.
 
 Built with `uv` (locked, `uv.lock` committed) inside a `python:3.12-slim`
 image — verified that `sqlite-vec`'s extension loading actually works in that

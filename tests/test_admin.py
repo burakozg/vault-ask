@@ -10,14 +10,11 @@ from fastapi.testclient import TestClient
 from vault_ask.api.app import create_app
 from vault_ask.config import Settings
 
-ADMIN_KEY = "test-admin-key"
-
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> Settings:
     return Settings(
         index={"db_path": tmp_path / "index.sqlite"},
-        admin_api_key=ADMIN_KEY,
     )
 
 
@@ -28,10 +25,6 @@ def client(cfg: Settings) -> Iterator[TestClient]:
         yield c
 
 
-def _auth(key: str = ADMIN_KEY) -> dict[str, str]:
-    return {"X-API-Key": key}
-
-
 class TestAdminPage:
     def test_served_unauthenticated(self, client: TestClient) -> None:
         resp = client.get("/admin")
@@ -39,37 +32,9 @@ class TestAdminPage:
         assert "vault-ask admin" in resp.text
 
 
-class TestAuth:
-    def test_no_key_configured_is_503(self, tmp_path: Path) -> None:
-        cfg = Settings(index={"db_path": tmp_path / "index.sqlite"})
-        with TestClient(create_app(cfg)) as c:
-            resp = c.get("/admin/config", headers=_auth())
-        assert resp.status_code == 503
-
-    def test_missing_key_is_401(self, client: TestClient) -> None:
-        resp = client.get("/admin/config")
-        assert resp.status_code == 401
-
-    def test_wrong_key_is_401(self, client: TestClient) -> None:
-        resp = client.get("/admin/config", headers=_auth("nope"))
-        assert resp.status_code == 401
-
-    def test_repeated_failures_are_throttled(self, client: TestClient) -> None:
-        for _ in range(10):
-            client.get("/admin/config", headers=_auth("nope"))
-        resp = client.get("/admin/config", headers=_auth("nope"))
-        assert resp.status_code == 429
-
-    def test_correct_key_after_failures_clears_throttle(self, client: TestClient) -> None:
-        for _ in range(5):
-            client.get("/admin/config", headers=_auth("nope"))
-        resp = client.get("/admin/config", headers=_auth())
-        assert resp.status_code == 200
-
-
 class TestReadConfig:
     def test_defaults_have_no_overrides(self, client: TestClient) -> None:
-        resp = client.get("/admin/config", headers=_auth())
+        resp = client.get("/admin/config")
         assert resp.status_code == 200
         body = resp.json()
         assert body["models"]["generation"]["override"] is None
@@ -83,12 +48,12 @@ class TestReadConfig:
 class TestWriteConfig:
     def test_valid_generation_override(self, client: TestClient) -> None:
         resp = client.put(
-            "/admin/config", headers=_auth(), json={"models": {"generation": "openrouter/x/y"}}
+            "/admin/config", json={"models": {"generation": "openrouter/x/y"}}
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["pending_restart"] is True
 
-        again = client.get("/admin/config", headers=_auth()).json()
+        again = client.get("/admin/config").json()
         assert again["models"]["generation"]["override"] == "openrouter/x/y"
         # Active is unchanged: overrides apply on restart, not live.
         assert again["models"]["generation"]["active"] == "openrouter/google/gemini-2.5-flash"
@@ -96,15 +61,15 @@ class TestWriteConfig:
 
     def test_valid_retrieval_override(self, client: TestClient) -> None:
         resp = client.put(
-            "/admin/config", headers=_auth(), json={"retrieval": {"final_top_k": 12}}
+            "/admin/config", json={"retrieval": {"final_top_k": 12}}
         )
         assert resp.status_code == 200, resp.text
-        again = client.get("/admin/config", headers=_auth()).json()
+        again = client.get("/admin/config").json()
         assert again["retrieval"]["final_top_k"]["override"] == 12
 
     def test_rerank_top_k_not_overridable(self, client: TestClient) -> None:
         resp = client.put(
-            "/admin/config", headers=_auth(), json={"retrieval": {"rerank_top_k": 40}}
+            "/admin/config", json={"retrieval": {"rerank_top_k": 40}}
         )
         assert resp.status_code == 400
         assert "rerank_top_k" in resp.json()["detail"]
@@ -113,29 +78,25 @@ class TestWriteConfig:
         # active rerank_top_k is 30 (file default); final_top_k > that violates
         # RetrievalConfig's rerank_top_k >= final_top_k invariant.
         resp = client.put(
-            "/admin/config", headers=_auth(), json={"retrieval": {"final_top_k": 40}}
+            "/admin/config", json={"retrieval": {"final_top_k": 40}}
         )
         assert resp.status_code == 400
         assert "rerank_top_k" in resp.json()["detail"]
 
-    def test_unauthenticated_write_rejected(self, client: TestClient) -> None:
-        resp = client.put("/admin/config", json={"models": {"generation": "x"}})
-        assert resp.status_code == 401
-
 
 class TestResetConfig:
     def test_clears_stored_overrides(self, client: TestClient) -> None:
-        client.put("/admin/config", headers=_auth(), json={"models": {"generation": "openrouter/x/y"}})
-        resp = client.delete("/admin/config", headers=_auth())
+        client.put("/admin/config", json={"models": {"generation": "openrouter/x/y"}})
+        resp = client.delete("/admin/config")
         assert resp.status_code == 200, resp.text
 
-        again = client.get("/admin/config", headers=_auth()).json()
+        again = client.get("/admin/config").json()
         assert again["models"]["generation"]["override"] is None
 
     def test_pending_restart_false_when_matches_boot_snapshot(self, client: TestClient) -> None:
         # Nothing was ever written, so resetting (to {}) matches what this
         # process booted with ({}) — no restart needed to reach that state.
-        resp = client.delete("/admin/config", headers=_auth())
+        resp = client.delete("/admin/config")
         assert resp.json()["pending_restart"] is False
 
 
@@ -197,22 +158,22 @@ class TestOverridesFileHardening:
         path.write_text("{broken")
         monkeypatch.setattr(config_module, "_active_overrides_path", path)
         with TestClient(create_app(cfg)) as c:
-            resp = c.get("/admin/config", headers=_auth())
+            resp = c.get("/admin/config")
         assert resp.status_code == 200
 
 
 class TestGenerationValidation:
     def test_empty_generation_is_rejected(self, client: TestClient) -> None:
         """Previously saved fine and failed at the next restart's first call."""
-        resp = client.put("/admin/config", headers=_auth(), json={"models": {"generation": ""}})
+        resp = client.put("/admin/config", json={"models": {"generation": ""}})
         assert resp.status_code == 400
 
     def test_graph_enabled_is_overridable(self, client: TestClient) -> None:
         resp = client.put(
-            "/admin/config", headers=_auth(), json={"retrieval": {"graph_enabled": False}}
+            "/admin/config", json={"retrieval": {"graph_enabled": False}}
         )
         assert resp.status_code == 200, resp.text
-        again = client.get("/admin/config", headers=_auth()).json()
+        again = client.get("/admin/config").json()
         assert again["retrieval"]["graph_enabled"]["override"] is False
 
 
@@ -222,20 +183,20 @@ class TestWebSection:
     should not require shipping an image."""
 
     def test_web_section_is_readable(self, client: TestClient) -> None:
-        body = client.get("/admin/config", headers=_auth()).json()
+        body = client.get("/admin/config").json()
         assert body["web"]["enabled"] == {"active": False, "override": None}
         assert body["editable_keys"]["web"] == ["enabled", "max_results", "provider"]
 
     def test_can_be_toggled(self, client: TestClient) -> None:
-        resp = client.put("/admin/config", headers=_auth(), json={"web": {"enabled": True}})
+        resp = client.put("/admin/config", json={"web": {"enabled": True}})
         assert resp.status_code == 200, resp.text
-        again = client.get("/admin/config", headers=_auth()).json()
+        again = client.get("/admin/config").json()
         assert again["web"]["enabled"]["override"] is True
 
     def test_thresholds_are_not_console_editable(self, client: TestClient) -> None:
         """thin_distance was measured; a browser is the wrong place to nudge
         the number that decides when the vault stops being the only source."""
-        resp = client.put("/admin/config", headers=_auth(), json={"web": {"thin_distance": 5.0}})
+        resp = client.put("/admin/config", json={"web": {"thin_distance": 5.0}})
         assert resp.status_code == 400
         assert "thin_distance" in resp.json()["detail"]
 
@@ -244,7 +205,7 @@ class TestProviderChoices:
     """The console offers real choices, and refuses one it knows cannot work."""
 
     def test_reports_every_provider_with_availability(self, client: TestClient) -> None:
-        body = client.get("/admin/config", headers=_auth()).json()
+        body = client.get("/admin/config").json()
         by_name = {p["name"]: p for p in body["web_providers"]}
         assert set(by_name) == {"duckduckgo", "tavily", "brave"}
         assert by_name["duckduckgo"]["available"] is True
@@ -254,7 +215,7 @@ class TestProviderChoices:
         assert by_name["tavily"]["env_var"] == "VAULTASK_TAVILY_API_KEY"
 
     def test_offers_model_suggestions(self, client: TestClient) -> None:
-        body = client.get("/admin/config", headers=_auth()).json()
+        body = client.get("/admin/config").json()
         suggestions = body["generation_suggestions"]
         assert len(suggestions) > 3
         assert body["models"]["generation"]["active"] in suggestions
@@ -263,7 +224,7 @@ class TestProviderChoices:
     def test_selecting_a_keyless_provider_is_rejected(self, client: TestClient) -> None:
         """Saving it would look fine and then silently return no web results
         after the next restart — the failure would point nowhere."""
-        resp = client.put("/admin/config", headers=_auth(), json={"web": {"provider": "tavily"}})
+        resp = client.put("/admin/config", json={"web": {"provider": "tavily"}})
         assert resp.status_code == 400
         detail = resp.json()["detail"]
         assert "VAULTASK_TAVILY_API_KEY" in detail
@@ -276,15 +237,14 @@ class TestProviderChoices:
         monkeypatch.setattr(config_module, "_active_overrides_path", tmp_path / "o.json")
         cfg = Settings(
             index={"db_path": tmp_path / "index.sqlite"},
-            admin_api_key=ADMIN_KEY,
             tavily_api_key="tvly-x",
         )
         with TestClient(create_app(cfg)) as c:
-            resp = c.put("/admin/config", headers=_auth(), json={"web": {"provider": "tavily"}})
+            resp = c.put("/admin/config", json={"web": {"provider": "tavily"}})
             assert resp.status_code == 200, resp.text
-            again = c.get("/admin/config", headers=_auth()).json()
+            again = c.get("/admin/config").json()
             assert again["web"]["provider"]["override"] == "tavily"
 
     def test_unknown_provider_is_rejected(self, client: TestClient) -> None:
-        resp = client.put("/admin/config", headers=_auth(), json={"web": {"provider": "altavista"}})
+        resp = client.put("/admin/config", json={"web": {"provider": "altavista"}})
         assert resp.status_code == 400

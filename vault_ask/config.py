@@ -373,10 +373,6 @@ class Settings(BaseSettings):
     # --- Secrets: environment only, never YAML, never logged ----------------
     vault_couchdb_password: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
-    #: Gates the admin portal (vault_ask/api/admin.py). Unset means "closed",
-    #: never "open to everyone" — the same fail-closed stance podcast-digest's
-    #: own admin key takes.
-    admin_api_key: SecretStr | None = None
     #: Search-provider keys. Environment-only like every other secret here:
     #: never in config.yaml, never in overrides.json, never settable from the
     #: admin console. The console reports whether each is *present* so a

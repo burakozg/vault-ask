@@ -146,9 +146,6 @@ def create_app(cfg: Settings) -> FastAPI:
         app.state.cfg = cfg
         app.state.conn = connect(cfg.index.db_path, embedding_dim=cfg.models.embedding_dim)
         mcp_adapter.configure(app.state.conn, cfg)
-        app.state.admin_api_key = (
-            cfg.admin_api_key.get_secret_value() if cfg.admin_api_key else None
-        )
         # Snapshot of overrides.json as it stood when this process booted —
         # `pending_restart` in the admin API compares the file's current
         # content against this, not against the shipped defaults, so a save
@@ -178,7 +175,7 @@ def create_app(cfg: Settings) -> FastAPI:
     app.include_router(admin_router)
     app.mount("/mcp", mcp_app)
 
-    @app.get("/admin", summary="Admin console (static page; data behind it needs the API key)")
+    @app.get("/admin", summary="Admin console (auth handled by the reverse proxy)")
     async def admin_page() -> FileResponse:
         return FileResponse(STATIC / "admin.html")
 
