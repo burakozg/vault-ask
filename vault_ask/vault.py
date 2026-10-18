@@ -103,6 +103,10 @@ class LiveSyncVault:
         """
         if self._client is None:
             raise VaultUnavailable("vault.couchdb_url is not set")
+        # Keys are lowercased paths, so the range must be too: "15 PDFs/" sorts
+        # *before* every "15 pdfs/..." key and its end key before them all, which
+        # lists nothing. Folders that were already lowercase never showed it.
+        prefix = prefix.lower()
         end = prefix[:-1] + chr(ord(prefix[-1]) + 1) if prefix else "￰"
         try:
             response = await self._client.get(

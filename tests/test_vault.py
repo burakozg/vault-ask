@@ -142,6 +142,16 @@ async def test_deleted_flag_is_read_from_the_body_not_the_row() -> None:
 
 
 @respx.mock
+async def test_a_prefix_with_capitals_asks_for_the_lowercased_range() -> None:
+    """Entries are keyed by lowercased path; "15 PDFs/" built a range that
+    sorted before every real key and listed nothing."""
+    _mock_listing([_live_row("15 pdfs/a.md")])
+    await _vault().list_prefix("15 PDFs/")
+    params = respx.calls.last.request.url.params
+    assert (params["startkey"], params["endkey"]) == ('"15 pdfs/"', '"15 pdfs0"')
+
+
+@respx.mock
 async def test_include_docs_is_requested() -> None:
     """Without it there is no body, so the soft-delete flag is invisible and
     every note also loses its `children` (see test below for that half).
