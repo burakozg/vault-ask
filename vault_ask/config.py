@@ -176,6 +176,10 @@ class RetrievalConfig(StrictModel):
     vector_top_k: int = Field(default=40, ge=1, le=500)
     fts_top_k: int = Field(default=40, ge=1, le=500)
     fusion_top_k: int = Field(default=20, ge=1, le=200)
+    #: Most chunks of one note allowed through fusion. Found while measuring
+    #: graph expansion: three near-duplicate chunks of one note held 3 of 8
+    #: slots. 0 would be meaningless, so the floor is 1.
+    max_chunks_per_doc: int = Field(default=2, ge=1, le=50)
     #: A real off switch. `graph_max_siblings=0` looks like one and is not:
     #: the topic-note pull in `expand_graph` happens before, and independently
     #: of, the sibling query, so zeroing siblings still injects every topic
@@ -210,6 +214,10 @@ class RetrievalConfig(StrictModel):
     #: reached it, so they tie exactly and their order among themselves is
     #: arbitrary — there is no ranking signal in there to tune.
     graph_max_slots: int = Field(default=2, ge=0, le=50)
+    #: Grade the fused candidates with `models.rerank` and drop the irrelevant
+    #: ones (vault_ask.rerank). Off switch for debugging, or when the rerank
+    #: model is unreachable; failures already fall back to fused order.
+    rerank_enabled: bool = True
     rerank_top_k: int = Field(default=30, ge=1, le=200)
     final_top_k: int = Field(default=8, ge=1, le=50)
 

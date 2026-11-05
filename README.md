@@ -68,7 +68,7 @@ concrete user for it (Claude Code, in this very session). REST exists to let
 other homelab apps call this one programmatically and is still deferred until
 one of them actually asks for it — built speculatively, it would be a guess
 at a shape nothing has validated yet. The core (retrieve → expand → assemble →
-answer — rerank is still unbuilt, see "Later") is adapter-agnostic either way,
+answer) is adapter-agnostic either way,
 so REST is new adapter code against an unchanged core whenever it lands, not a
 redesign.
 
@@ -196,9 +196,9 @@ carry no auth of their own — both sit behind the reverse proxy in front of
 this container, which gates the whole `/admin*` prefix with its own login
 before a request ever reaches vault-ask.
 
-Deliberately excludes `models.rerank` and `retrieval.rerank_top_k`: no rerank
-step is wired into the pipeline yet (see "Build order" below), and a console
-knob that changes nothing would be a UI that lies. Deployment topology
+Deliberately excludes `models.rerank`, `retrieval.rerank_enabled` and
+`retrieval.rerank_top_k`: the rerank step is deployment plumbing, not something
+to nudge from a browser. Deployment topology
 (`vault.*`, `models.embedding*`, `api.*`, `index.*`) and every secret stay
 file/environment-only for the same reason podcast-digest's own console
 excludes them — a typo in a browser form must not be able to point the vault
@@ -515,7 +515,9 @@ question
   → FTS5 top-40   ──┼→ reciprocal rank fusion → top-20
   → graph expansion: for each hit's doc, pull its topic notes and up to N
     sibling docs sharing a topic edge; score them at a discount
-  → rerank top-30 → top-8, of which at most graph_max_slots are expanded
+  → per-note cap (max_chunks_per_doc) applied at fusion
+  → rerank top-30: one cheap model call grades each 0-3, grade 0 dropped,
+    then top final_top_k (16), of which at most graph_max_slots are expanded
   → assemble context, generation
 ```
 
@@ -580,6 +582,26 @@ thin-answer case is what it was introduced for.
 were three near-duplicate chunks of the *same* note occupying 3 of 8 slots.
 Base retrieval has no per-doc diversity cap, and expansion was partly papering
 over that. Worth fixing on its own terms — see "Open questions".
+
+### Rerank
+
+RRF scores carry no relevance information (rank 1 scores 1/61 whether the match
+is perfect or nonsense), so after fusion nothing has asked whether a chunk is
+*about* the question. `vault_ask/rerank.py` sends the top `rerank_top_k`
+candidates (title, heading, first 500 characters each) to `models.rerank` in one
+call and gets back a 0-3 grade per candidate; grade 0 is dropped, the rest are
+ordered by grade then fused order, and the first `final_top_k` are kept. It is
+what lets `final_top_k` be 16 without the tail filling with filler: on "what
+content do we have on deepfakes?" the pre-rerank tail held a photo-gallery
+agent guide (twice, at two paths) and a board-governance article.
+
+Best-effort, like the embedding host: a timeout, 429 or unparseable reply
+falls back to the fused order, and if *every* candidate grades 0 the grades are
+ignored — a reranker that finds nothing is more likely wrong than the whole
+candidate set being noise. Rerank only ever removes or reorders candidates, so
+the `allow_web` sensitivity filter, applied at retrieval, is untouched. Note
+the candidate snippets go to the rerank model's endpoint, as the chosen chunks
+already do for generation. `retrieval.rerank_enabled: false` turns it off.
 
 Reranking uses `google/gemini-2.5-flash-lite` via OpenRouter by default — already
 measured on this corpus (by `clippings-topics`) at ~1s with real answers, where
@@ -891,14 +913,16 @@ deliberately deferred rather than dropped.
 - Conversation memory: multi-turn needs query rewriting against history. Punt to
   after the REST/OpenAI-shim adapters exist; the shim gets the full transcript
   from the client either way.
-- **No per-doc diversity cap in retrieval.** Found while measuring graph
-  expansion: on one question, three near-duplicate chunks of the same note held
-  3 of 8 slots — and the same note existed at two paths (`10 raw/Obsidian/…`
-  and `10 raw/AI Tools/…`), so it was really one piece of writing taking 3/8 of
-  the answer. Expansion was partly compensating for this, which is a bad reason
-  to value expansion. A cap of ~2 chunks per doc in `fuse_rrf` is the obvious
-  fix; it needs measuring the same way expansion was, and it may change the
-  right value of `graph_max_slots` once it lands.
+- **Per-doc cap landed (`max_chunks_per_doc: 2`) but is not measured against
+  graph expansion.** Found while measuring graph expansion: three
+  near-duplicate chunks of the same note held 3 of 8 slots. The cap fixes that,
+  and may change the right value of `graph_max_slots` — re-run
+  `scripts/measure_graph_expansion.py`. It does not catch the same note living
+  at two paths (`10 raw/Local LLM/…` and `10 raw/Visual/…`); those count as two
+  docs.
+- **Broad "what do we have on X?" questions** are still answered by
+  summarising ~16 chunks. A mode that lists every matching note by title is the
+  next step if 16 proves too few.
 - Whether `99 topics/` notes should be retrievable directly or only reachable by
   graph expansion. They are summaries of other notes, so they may crowd out
   primaries. Partly answered: with `graph_max_slots` they can now take at most 2

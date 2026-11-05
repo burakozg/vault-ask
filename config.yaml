@@ -61,7 +61,11 @@ chunking:
 retrieval:
   vector_top_k: 40
   fts_top_k: 40
-  fusion_top_k: 20
+  fusion_top_k: 30
+  # At most this many chunks of one note survive fusion, so a broad question
+  # ("what do we have on deepfakes?") spreads over notes, not over one note's
+  # near-duplicate chunks.
+  max_chunks_per_doc: 2
   # A real off switch — graph_max_siblings: 0 does NOT disable expansion
   # (topic notes are still injected). See config.py::RetrievalConfig.
   graph_enabled: true
@@ -70,8 +74,11 @@ retrieval:
   # How many of final_top_k expanded chunks may take. Measured: without a
   # quota they displaced direct hits 1:1, up to 6 of 8 slots.
   graph_max_slots: 2
+  # Grade candidates with models.rerank and drop the irrelevant (vault_ask/rerank.py).
+  rerank_enabled: true
   rerank_top_k: 30
-  final_top_k: 8
+  # Was 8; a "what do we have on X?" question matched 54 notes and saw 8.
+  final_top_k: 16
 
 # Web fallback. OFF by default — this is the only component that sends
 # anything outside the house. It can only ever run when allow_web is true,

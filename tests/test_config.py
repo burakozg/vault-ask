@@ -14,7 +14,7 @@ class TestShippedConfig:
         settings = load_settings(Path(__file__).parent.parent / "config.yaml")
         assert settings.corpus.include == ["**/*.md"]
         assert settings.vault.db == "the_brain"
-        assert settings.retrieval.final_top_k == 8
+        assert settings.retrieval.final_top_k == 16
 
     def test_unknown_key_is_a_startup_crash(self, tmp_path: Path) -> None:
         bad = tmp_path / "config.yaml"

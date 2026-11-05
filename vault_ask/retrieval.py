@@ -218,11 +218,20 @@ _RRF_K = 60
 
 
 def fuse_rrf(
-    vector_hits: list[SearchHit], fts_hits: list[SearchHit], *, top_k: int
+    vector_hits: list[SearchHit],
+    fts_hits: list[SearchHit],
+    *,
+    top_k: int,
+    max_per_doc: int | None = None,
 ) -> list[SearchHit]:
     """Reciprocal rank fusion: combine by *position* in each list, not by the
     raw score — bm25 and vector distance are not on comparable scales, so
     anything that tried to add them together would be combining noise.
+
+    ``max_per_doc`` keeps at most that many chunks of any one note (the
+    best-scored ones), applied *before* the ``top_k`` cut so the slots it frees
+    go to other notes. Without it, a broad question ("what do we have on X?")
+    spends its few slots on near-duplicate chunks of the same note.
     """
     scores: dict[str, float] = {}
     by_id: dict[str, SearchHit] = {}
@@ -240,7 +249,18 @@ def fuse_rrf(
             if hit.source and hit.source not in found_in:
                 found_in.append(hit.source)
 
-    ranked = sorted(scores.items(), key=lambda item: -item[1])[:top_k]
+    ranked = sorted(scores.items(), key=lambda item: -item[1])
+    if max_per_doc is not None:
+        per_doc: dict[str, int] = {}
+        capped = []
+        for chunk_id, score in ranked:
+            doc_id = by_id[chunk_id].doc_id
+            if per_doc.get(doc_id, 0) >= max_per_doc:
+                continue
+            per_doc[doc_id] = per_doc.get(doc_id, 0) + 1
+            capped.append((chunk_id, score))
+        ranked = capped
+    ranked = ranked[:top_k]
     return [
         replace(by_id[chunk_id], score=score, source="+".join(sources[chunk_id]))
         for chunk_id, score in ranked

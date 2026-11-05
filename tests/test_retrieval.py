@@ -206,6 +206,22 @@ class TestFuseRrf:
     def test_empty_inputs(self) -> None:
         assert fuse_rrf([], [], top_k=10) == []
 
+    def test_max_per_doc_caps_chunks_and_frees_slots_for_other_docs(self) -> None:
+        from dataclasses import replace
+
+        def chunk(chunk_id: str, doc_id: str) -> SearchHit:
+            return replace(self._hit(chunk_id), doc_id=doc_id)
+
+        hits = [chunk("a1", "A"), chunk("a2", "A"), chunk("a3", "A"), chunk("b1", "B"), chunk("c1", "C")]
+        fused = fuse_rrf(hits, [], top_k=4, max_per_doc=2)
+        assert [h.chunk_id for h in fused] == ["a1", "a2", "b1", "c1"]
+
+    def test_max_per_doc_none_leaves_fusion_unchanged(self) -> None:
+        from dataclasses import replace
+
+        hits = [replace(self._hit(f"a{i}"), doc_id="A") for i in range(3)]
+        assert len(fuse_rrf(hits, [], top_k=10)) == 3
+
     def test_fused_score_replaces_source_score(self) -> None:
         from dataclasses import replace
 

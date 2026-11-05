@@ -7,9 +7,8 @@ itself fails (e.g. the embedding host is unreachable, or `chunks_vec`'s
 dimension doesn't match the query vector's because the model changed without
 a --rebuild). Degrading rather than raising here matches the rest of the
 pipeline's stance on the embedding host: best-effort, never load-bearing for
-the app to answer at all. No rerank yet — a later step; this module's job is
-to be the thing it slots into without its callers (the CLI today, the OpenAI
-shim next) having to change.
+the app to answer at all. The fused candidates are then graded by a cheap model
+(vault_ask.rerank), which is likewise best-effort.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ import litellm
 from .config import Settings
 from .embed import embed_texts
 from .prompts import SYSTEM_PROMPT
+from .rerank import rerank
 from .retrieval import (
     SearchHit,
     assemble_context,
@@ -115,7 +115,12 @@ async def retrieve(
     # scores onto the positive, higher-is-better scale expand_graph assumes —
     # raw bm25 (lower/more negative is better) would make its discount
     # multiply the wrong way.
-    fused = fuse_rrf(vector_hits, fts_hits, top_k=cfg.retrieval.fusion_top_k)
+    fused = fuse_rrf(
+        vector_hits,
+        fts_hits,
+        top_k=cfg.retrieval.fusion_top_k,
+        max_per_doc=cfg.retrieval.max_chunks_per_doc,
+    )
     expanded = (
         expand_graph(
             conn,
@@ -128,7 +133,19 @@ async def retrieve(
         else []
     )
     final_k = top_k if top_k is not None else cfg.retrieval.final_top_k
-    return _merge(fused, expanded, final_k=final_k, graph_slots=cfg.retrieval.graph_max_slots)
+    if not cfg.retrieval.rerank_enabled:
+        return _merge(fused, expanded, final_k=final_k, graph_slots=cfg.retrieval.graph_max_slots)
+
+    candidates = _merge(
+        fused,
+        expanded,
+        final_k=max(cfg.retrieval.rerank_top_k, final_k),
+        graph_slots=cfg.retrieval.graph_max_slots,
+    )
+    # Reranking can drop chunks (grade 0) but never adds any, so `final_k`
+    # is still a ceiling and `allow_web`'s sensitivity filter is untouched.
+    reranked = await rerank(cfg, question, candidates)
+    return (reranked if reranked is not None else candidates)[:final_k]
 
 
 def _merge(

@@ -35,16 +35,16 @@ log = logging.getLogger("vault_ask.overrides")
 #: that section (deployment topology, machine-protecting limits) stays
 #: file/environment-only.
 OVERRIDABLE_KEYS: dict[str, frozenset[str]] = {
-    # rerank is excluded: no rerank step is wired into the pipeline yet
-    # (README "Build order") — exposing a knob that currently does nothing
-    # would be a UI that lies about what changing it does.
+    # rerank is excluded: which model grades candidates is deployment
+    # plumbing, like embedding, not something to nudge from a browser.
     "models": frozenset({"generation"}),
     # The kill switch for the one component that talks to the outside world.
     # Thresholds stay file-only: they were measured (see WebConfig) and a
     # browser is the wrong place to nudge a number that decides when the vault
     # stops being the only source.
     "web": frozenset({"enabled", "provider", "max_results"}),
-    # rerank_top_k is excluded for the same reason as models.rerank above.
+    # rerank_enabled and rerank_top_k are excluded for the same reason as
+    # models.rerank above.
     "retrieval": frozenset(
         {
             "vector_top_k",

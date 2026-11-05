@@ -40,3 +40,6 @@ def _isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.startswith("VAULTASK_"):
             monkeypatch.delenv(key, raising=False)
+    # Rerank is a model call; tests that do not exercise it must not make one.
+    # tests/test_rerank.py turns it back on against a fake.
+    monkeypatch.setenv("VAULTASK_RETRIEVAL__RERANK_ENABLED", "false")
