@@ -595,12 +595,16 @@ what lets `final_top_k` be 16 without the tail filling with filler: on "what
 content do we have on deepfakes?" the pre-rerank tail held a photo-gallery
 agent guide (twice, at two paths) and a board-governance article.
 
-The model is asked for one `N: grade` line per candidate rather than a
-positional list, because positional lists misalign: a local `qwen3.5:9b`
-returned 20-26 grades for 30 candidates, so every grade after the first slip
-belonged to the wrong chunk. A labelled reply must cover each number exactly
-once; a bare list of exactly N whole numbers is still accepted as a fallback
-(flash-lite once answered `1.0, 0.0, 3.0`). A single 429 is retried after 2 s.
+The model is asked for one `N: grade` line per *relevant* candidate; a
+candidate it does not list is grade 0, and `none` means nothing is relevant.
+Labels rather than a positional list, because positional lists misalign: a
+local `qwen3.5:9b` returned 20-26 grades for 30 candidates, so every grade after
+the first slip belonged to the wrong chunk. Sparse rather than exhaustive
+because that is what models do anyway — flash-lite answered `8: 3 / 10: 3 /
+28: 3` to a prompt demanding all 30 — and it makes the reply shorter. A label
+outside 1..N, a candidate graded two ways, or a non-whole grade rejects the
+reply; a bare list of exactly N whole numbers is still accepted as a fallback.
+A single 429 is retried after 2 s.
 A 9B local model was also compared as the rerank model and rejected: 12-42 s
 per call against ~1 s, and it graded clearly on-topic "Microsoft Entra" notes 0.
 

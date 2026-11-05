@@ -62,19 +62,27 @@ class TestParseGrades:
     def test_labelled_in_a_code_fence_with_chatter(self) -> None:
         assert parse_grades("Here you go:\n```\n1: 1\n2: 2\n```", 2) == [1, 2]
 
+    def test_unlisted_candidates_are_grade_zero(self) -> None:
+        # What flash-lite actually returned live: only the relevant ones.
+        assert parse_grades("8: 3\n10: 3\n28: 3", 30) == [
+            3 if i in (8, 10, 28) else 0 for i in range(1, 31)
+        ]
+
+    def test_none_means_nothing_is_relevant(self) -> None:
+        assert parse_grades("none", 3) == [0, 0, 0]
+        assert parse_grades("`None`", 3) == [0, 0, 0]
+
     @pytest.mark.parametrize(
         "text",
         [
-            "1: 3\n2: 0",  # candidate 3 missing
-            "1: 3\n2: 0\n3: 1\n4: 2",  # candidate 4 does not exist
+            "1: 3\n4: 2",  # candidate 4 does not exist
+            "0: 3",  # candidates are numbered from 1
             "1: 3\n2: 9\n3: 1",  # grade out of range
-            "1: 3\n1: 2\n2: 0\n3: 1",  # candidate 1 graded two ways
-            "1: 3\n2: 1.5\n3: 1",  # fractional grade
+            "1: 3\n1: 2",  # candidate 1 graded two ways
+            "1: 3\n2: 1.5",  # fractional grade
         ],
     )
-    def test_rejects_labelled_replies_that_do_not_cover_every_candidate_once(
-        self, text: str
-    ) -> None:
+    def test_rejects_labelled_replies_that_are_malformed(self, text: str) -> None:
         assert parse_grades(text, 3) is None
 
     def test_bare_list_fallback(self) -> None:
@@ -103,6 +111,13 @@ class TestApplyGrades:
 
 
 class TestRerank:
+    async def test_sparse_reply_keeps_only_the_listed_candidates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(litellm, "acompletion", _Fake("3: 2\n1: 3"))
+        out = await rerank(Settings(), "q", [_hit("a"), _hit("b"), _hit("c")])
+        assert out is not None and [h.chunk_id for h in out] == ["a", "c"]
+
     async def test_returns_pruned_reordered_hits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _Fake("1: 0\n2: 3\n3: 2")
         monkeypatch.setattr(litellm, "acompletion", fake)

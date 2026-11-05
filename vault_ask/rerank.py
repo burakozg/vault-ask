@@ -31,10 +31,11 @@ _TIMEOUT_S = 30
 
 _SYSTEM = (
     "You grade search results. For each numbered candidate passage, rate how "
-    "directly it is about the user's question: 0 = unrelated or only a passing "
-    "mention, 1 = tangential, 2 = relevant, 3 = directly on topic. Reply with "
-    "one line per candidate in the form `N: grade`, covering every candidate "
-    "number exactly once, and nothing else."
+    "directly it is about the user's question: 1 = tangential, 2 = relevant, "
+    "3 = directly on topic. Reply with one line per candidate that scores 1, 2 "
+    "or 3, in the form `N: grade`, and nothing else. Leave out every candidate "
+    "that is unrelated or only a passing mention. If none are relevant, reply "
+    "`none`."
 )
 
 #: Seconds to wait before the single retry after an upstream 429. Measured:
@@ -62,28 +63,34 @@ def _whole_grade(value: float) -> bool:
 def parse_grades(text: str, n: int) -> list[int] | None:
     """The model's reply as ``n`` grades in 0..3, or None if it is not that.
 
-    Labelled lines (``7: 3``) are the format asked for because they cannot
-    misalign: measured, a 9B local model asked for a positional list of 30
-    returned 20-26 values, so every grade after the first slip belonged to the
-    wrong chunk. A labelled reply must cover every number 1..n exactly once.
+    Sparse labelled lines (``7: 3``): a candidate the reply does not mention
+    is grade 0. That is what the prompt asks for, and it is also what models do
+    unprompted — measured live, flash-lite answered ``8: 3 / 10: 3 / 28: 3``
+    to a prompt that demanded all 30 and left the zeros out. Labels, rather
+    than a positional list, because a positional list misaligns when a model
+    loses count (a 9B local model returned 20-26 values for 30 candidates).
+
+    Rejected: a label outside 1..n, one candidate graded two ways, or a grade
+    that is not a whole number in 0..3. ``none`` means every grade is 0.
 
     A bare run of exactly ``n`` numbers is still accepted as a fallback —
-    flash-lite answered ``1.0, 0.0, 3.0`` to the old positional prompt — but
-    only when it carries no labels at all, so a half-labelled reply is never
-    guessed at.
+    flash-lite answered ``1.0, 0.0, 3.0`` to the original positional prompt —
+    but only when the reply carries no labels at all.
     """
     labelled: dict[int, float] = {}
     for label, value in _LABELLED_RE.findall(text):
         index = int(label)
+        if not 1 <= index <= n:
+            return None
         if index in labelled and labelled[index] != float(value):
             return None  # the same candidate graded two different ways
         labelled[index] = float(value)
     if labelled:
-        if set(labelled) != set(range(1, n + 1)) or not all(
-            _whole_grade(v) for v in labelled.values()
-        ):
+        if not all(_whole_grade(v) for v in labelled.values()):
             return None
-        return [int(labelled[i]) for i in range(1, n + 1)]
+        return [int(labelled.get(i, 0)) for i in range(1, n + 1)]
+    if re.fullmatch(r"\W*none\W*", text, re.IGNORECASE):
+        return [0] * n
 
     numbers = [float(m) for m in _NUMBER_RE.findall(text)]
     if len(numbers) != n or not all(_whole_grade(g) for g in numbers):
