@@ -14,7 +14,6 @@ make an answer better; it must never be the reason there isn't one.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 
@@ -36,7 +35,7 @@ _SYSTEM = (
     "ONLY a JSON array of integers, one per candidate, in order."
 )
 
-_ARRAY_RE = re.compile(r"\[[^\[\]]*\]")
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
 def _prompt(question: str, hits: list[SearchHit]) -> str:
@@ -49,19 +48,17 @@ def _prompt(question: str, hits: list[SearchHit]) -> str:
 
 
 def parse_grades(text: str, n: int) -> list[int] | None:
-    """The model's reply as ``n`` grades in 0..3, or None if it is not that."""
-    for match in _ARRAY_RE.finditer(text):
-        try:
-            grades = json.loads(match.group())
-        except ValueError:
-            continue
-        if (
-            len(grades) == n
-            and all(isinstance(g, int) and not isinstance(g, bool) for g in grades)
-            and all(0 <= g <= 3 for g in grades)
-        ):
-            return grades
-    return None
+    """The model's reply as ``n`` grades in 0..3, or None if it is not that.
+
+    Lenient about format, strict about content: measured live, flash-lite
+    answered ``1.0, 0.0, 3.0`` with no brackets despite being asked for a JSON
+    array of integers. Any run of numbers is accepted as long as there are
+    exactly ``n`` of them and each is a whole number from 0 to 3.
+    """
+    numbers = [float(m) for m in _NUMBER_RE.findall(text)]
+    if len(numbers) != n or any(g != int(g) or not 0 <= g <= 3 for g in numbers):
+        return None
+    return [int(g) for g in numbers]
 
 
 def apply_grades(hits: list[SearchHit], grades: list[int]) -> list[SearchHit]:

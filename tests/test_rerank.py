@@ -54,8 +54,12 @@ class TestParseGrades:
     def test_array_inside_a_code_fence(self) -> None:
         assert parse_grades("```json\n[1,2]\n```", 2) == [1, 2]
 
+    def test_bare_comma_separated_floats(self) -> None:
+        # What gemini-2.5-flash-lite actually returned in production.
+        assert parse_grades("1.0, 0.0, 3.0", 3) == [1, 0, 3]
+
     @pytest.mark.parametrize(
-        "text", ["[1, 2]", "[1, 2, 9]", "[1, 2, 3.5]", '["a","b","c"]', "[true, 1, 2]", "nope", ""]
+        "text", ["[1, 2]", "[1, 2, 9]", "[1, 2, 3.5]", '["a","b","c"]', "[-1, 1, 2]", "nope", ""]
     )
     def test_rejects_anything_that_is_not_n_grades(self, text: str) -> None:
         assert parse_grades(text, 3) is None
