@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Makes the Ollama menu-bar app listen on the LAN after every login.
+     `launchctl setenv` alone is forgotten at reboot. Install:
+       cp scripts/com.homelab.ollama-env.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.homelab.ollama-env.plist
+     It must run before Ollama starts; if Ollama is in your Login Items, quit
+     and reopen it once after the first login. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.homelab.ollama-env</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/launchctl</string>
+        <string>setenv</string>
+        <string>OLLAMA_HOST</string>
+        <string>0.0.0.0:11434</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

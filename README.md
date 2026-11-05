@@ -913,13 +913,25 @@ deliberately deferred rather than dropped.
 - Conversation memory: multi-turn needs query rewriting against history. Punt to
   after the REST/OpenAI-shim adapters exist; the shim gets the full transcript
   from the client either way.
-- **Per-doc cap landed (`max_chunks_per_doc: 2`) but is not measured against
-  graph expansion.** Found while measuring graph expansion: three
-  near-duplicate chunks of the same note held 3 of 8 slots. The cap fixes that,
-  and may change the right value of `graph_max_slots` — re-run
-  `scripts/measure_graph_expansion.py`. It does not catch the same note living
-  at two paths (`10 raw/Local LLM/…` and `10 raw/Visual/…`); those count as two
-  docs.
+- **Per-doc cap landed (`max_chunks_per_doc: 2`); measured against graph
+  expansion** with `scripts/measure_graph_expansion.py` (same 20 questions,
+  rerank off to isolate it, 2026-11-05, local index):
+
+  | | expansion fired | expanded chunks | displaced direct hits |
+  |---|---|---|---|
+  | final 8, no cap (the table above) | 9/20 | 18 | 18 |
+  | final 8, cap 2 | 9/20 | 18 | 18 |
+  | final 16, cap 2, fusion 30 (shipped) | 14/20 | 28 | 28 |
+
+  The cap alone changes nothing on this question set, so it is not what moved
+  expansion. Widening to 16 did: expanded chunks only have to out-score the
+  16th direct hit rather than the 8th, so expansion fires more often (70% vs
+  45%). Each firing is still held to `graph_max_slots` = 2, now 12.5% of the
+  answer rather than 25%, so the quota is proportionally tighter and was left
+  alone. Not measured with rerank on: it grades expanded chunks against the
+  question too, so it should discard the irrelevant ones, but that is a
+  prediction. The cap does not catch the same note living at two paths
+  (`10 raw/Local LLM/…` and `10 raw/Visual/…`); those count as two docs.
 - **Broad "what do we have on X?" questions** are still answered by
   summarising ~16 chunks. A mode that lists every matching note by title is the
   next step if 16 proves too few.

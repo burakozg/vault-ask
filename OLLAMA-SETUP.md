@@ -59,9 +59,30 @@ Then quit and reopen the Ollama app (or `killall Ollama` and relaunch it) —
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
 ```
 
-`0.0.0.0` binds every interface on the box. If the machine has more than one
-(e.g. Wi-Fi and Ethernet both up) and you want to restrict it, bind the
-specific LAN IP instead: `OLLAMA_HOST=10.0.0.x:11434`.
+`0.0.0.0` binds every interface on the box, loopback included, which keeps
+`localhost:11434` working for everything else on the machine (other projects
+here default to it). If the machine has more than one non-loopback interface
+(e.g. Wi-Fi and Ethernet both up) and you want to restrict it, bind a specific
+LAN IP instead: `OLLAMA_HOST=10.0.0.x:11434`.
+
+**Binding a LAN IP has two costs.** It stops listening on loopback, so
+anything pointed at `localhost:11434` or `127.0.0.1:11434` (a local `.env`, the
+`ollama` provider in security-digest) gets connection refused until it is
+repointed at the LAN address. And DHCP can hand the machine a new address,
+after which Ollama silently fails to bind and the NAS sees "connection
+refused" with nothing in vault-ask having changed. On a single-interface
+machine, `0.0.0.0` exposes exactly the same network surface and has neither
+problem.
+
+**`launchctl setenv` does not survive a reboot.** To set it at every login
+install the LaunchAgent in `scripts/com.homelab.ollama-env.plist` (the install
+commands are in its header). It has to run before Ollama starts, so after the
+first login quit and reopen the Ollama app once.
+
+**Ollama has no authentication.** Listening on the LAN means anything on the
+LAN can run models and read the model list. The macOS application firewall
+cannot restrict by source address; if that matters, limit port 11434 to the
+NAS's address with a `pf` rule or at the router.
 
 macOS's firewall may prompt to allow incoming connections for `ollama` the
 first time something on the LAN reaches it — allow it, or the request will
