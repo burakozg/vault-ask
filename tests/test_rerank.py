@@ -34,34 +34,60 @@ def _hit(chunk_id: str) -> SearchHit:
 
 
 class _Fake:
-    def __init__(self, text: str | None = None, *, raises: bool = False) -> None:
+    def __init__(
+        self, text: str | None = None, *, raises: bool = False, rate_limited: int = 0
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._text = text
         self._raises = raises
+        self._rate_limited = rate_limited
 
     async def __call__(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
+        if len(self.calls) <= self._rate_limited:
+            raise litellm.RateLimitError("429", llm_provider="openrouter", model="m")
         if self._raises:
-            raise RuntimeError("429")
+            raise RuntimeError("boom")
         message = SimpleNamespace(content=self._text)
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
 class TestParseGrades:
-    def test_plain_array(self) -> None:
+    def test_labelled_lines(self) -> None:
+        assert parse_grades("1: 3\n2: 0\n3: 2", 3) == [3, 0, 2]
+
+    def test_labelled_lines_out_of_order(self) -> None:
+        assert parse_grades("3: 2\n1: 3\n2: 0", 3) == [3, 0, 2]
+
+    def test_labelled_in_a_code_fence_with_chatter(self) -> None:
+        assert parse_grades("Here you go:\n```\n1: 1\n2: 2\n```", 2) == [1, 2]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "1: 3\n2: 0",  # candidate 3 missing
+            "1: 3\n2: 0\n3: 1\n4: 2",  # candidate 4 does not exist
+            "1: 3\n2: 9\n3: 1",  # grade out of range
+            "1: 3\n1: 2\n2: 0\n3: 1",  # candidate 1 graded two ways
+            "1: 3\n2: 1.5\n3: 1",  # fractional grade
+        ],
+    )
+    def test_rejects_labelled_replies_that_do_not_cover_every_candidate_once(
+        self, text: str
+    ) -> None:
+        assert parse_grades(text, 3) is None
+
+    def test_bare_list_fallback(self) -> None:
         assert parse_grades("[3, 0, 2]", 3) == [3, 0, 2]
 
-    def test_array_inside_a_code_fence(self) -> None:
-        assert parse_grades("```json\n[1,2]\n```", 2) == [1, 2]
-
     def test_bare_comma_separated_floats(self) -> None:
-        # What gemini-2.5-flash-lite actually returned in production.
+        # What gemini-2.5-flash-lite returned in production to the old prompt.
         assert parse_grades("1.0, 0.0, 3.0", 3) == [1, 0, 3]
 
     @pytest.mark.parametrize(
         "text", ["[1, 2]", "[1, 2, 9]", "[1, 2, 3.5]", '["a","b","c"]', "[-1, 1, 2]", "nope", ""]
     )
-    def test_rejects_anything_that_is_not_n_grades(self, text: str) -> None:
+    def test_rejects_bare_lists_that_are_not_n_whole_grades(self, text: str) -> None:
         assert parse_grades(text, 3) is None
 
 
@@ -78,7 +104,7 @@ class TestApplyGrades:
 
 class TestRerank:
     async def test_returns_pruned_reordered_hits(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = _Fake("[0, 3, 2]")
+        fake = _Fake("1: 0\n2: 3\n3: 2")
         monkeypatch.setattr(litellm, "acompletion", fake)
         out = await rerank(Settings(), "q", [_hit("a"), _hit("b"), _hit("c")])
         assert out is not None
@@ -93,8 +119,31 @@ class TestRerank:
         monkeypatch.setattr(litellm, "acompletion", _Fake("I think the first one."))
         assert await rerank(Settings(), "q", [_hit("a"), _hit("b")]) is None
 
+    async def test_one_rate_limit_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("vault_ask.rerank._RETRY_DELAY_S", 0.0)
+        fake = _Fake("1: 0\n2: 3", rate_limited=1)
+        monkeypatch.setattr(litellm, "acompletion", fake)
+        out = await rerank(Settings(), "q", [_hit("a"), _hit("b")])
+        assert out is not None and [h.chunk_id for h in out] == ["b"]
+        assert len(fake.calls) == 2
+
+    async def test_persistent_rate_limit_gives_up_after_one_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("vault_ask.rerank._RETRY_DELAY_S", 0.0)
+        fake = _Fake("1: 3\n2: 3", rate_limited=5)
+        monkeypatch.setattr(litellm, "acompletion", fake)
+        assert await rerank(Settings(), "q", [_hit("a"), _hit("b")]) is None
+        assert len(fake.calls) == 2
+
+    async def test_other_errors_are_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _Fake(raises=True)
+        monkeypatch.setattr(litellm, "acompletion", fake)
+        assert await rerank(Settings(), "q", [_hit("a"), _hit("b")]) is None
+        assert len(fake.calls) == 1
+
     async def test_single_candidate_makes_no_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = _Fake("[3]")
+        fake = _Fake("1: 3")
         monkeypatch.setattr(litellm, "acompletion", fake)
         assert await rerank(Settings(), "q", [_hit("a")]) is None
         assert fake.calls == []
@@ -128,7 +177,7 @@ class TestRetrieveWithRerank:
         self, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("VAULTASK_RETRIEVAL__RERANK_ENABLED", "true")
-        fake = _Fake("[0, 3, 3]")
+        fake = _Fake("1: 0\n2: 3\n3: 3")
         monkeypatch.setattr(litellm, "acompletion", fake)
         hits = await retrieve(db, Settings(), "widget", allow_web=False)
         assert len(fake.calls) == 1
@@ -145,7 +194,7 @@ class TestRetrieveWithRerank:
     async def test_disabled_makes_no_call(
         self, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fake = _Fake("[3, 3, 3]")
+        fake = _Fake("1: 3\n2: 3\n3: 3")
         monkeypatch.setattr(litellm, "acompletion", fake)
         await retrieve(db, Settings(), "widget", allow_web=False)
         assert fake.calls == []
@@ -154,7 +203,7 @@ class TestRetrieveWithRerank:
         self, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("VAULTASK_RETRIEVAL__RERANK_ENABLED", "true")
-        fake = _Fake("[3, 3]")
+        fake = _Fake("1: 3\n2: 3")
         monkeypatch.setattr(litellm, "acompletion", fake)
         hits = await retrieve(db, Settings(), "widget", allow_web=True)
         assert {h.sensitivity for h in hits} == {"open"}

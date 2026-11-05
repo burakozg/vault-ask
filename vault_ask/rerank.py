@@ -14,6 +14,7 @@ make an answer better; it must never be the reason there isn't one.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -32,9 +33,16 @@ _SYSTEM = (
     "You grade search results. For each numbered candidate passage, rate how "
     "directly it is about the user's question: 0 = unrelated or only a passing "
     "mention, 1 = tangential, 2 = relevant, 3 = directly on topic. Reply with "
-    "ONLY a JSON array of integers, one per candidate, in order."
+    "one line per candidate in the form `N: grade`, covering every candidate "
+    "number exactly once, and nothing else."
 )
 
+#: Seconds to wait before the single retry after an upstream 429. Measured:
+#: OpenRouter's shared pool for flash-lite returned a 429 mid-run; a transient
+#: limit should not cost the answer its reranking.
+_RETRY_DELAY_S = 2.0
+
+_LABELLED_RE = re.compile(r"(\d+)\s*[:=]\s*(-?\d+(?:\.\d+)?)")
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
@@ -47,16 +55,38 @@ def _prompt(question: str, hits: list[SearchHit]) -> str:
     return "\n".join(lines)
 
 
+def _whole_grade(value: float) -> bool:
+    return value == int(value) and 0 <= value <= 3
+
+
 def parse_grades(text: str, n: int) -> list[int] | None:
     """The model's reply as ``n`` grades in 0..3, or None if it is not that.
 
-    Lenient about format, strict about content: measured live, flash-lite
-    answered ``1.0, 0.0, 3.0`` with no brackets despite being asked for a JSON
-    array of integers. Any run of numbers is accepted as long as there are
-    exactly ``n`` of them and each is a whole number from 0 to 3.
+    Labelled lines (``7: 3``) are the format asked for because they cannot
+    misalign: measured, a 9B local model asked for a positional list of 30
+    returned 20-26 values, so every grade after the first slip belonged to the
+    wrong chunk. A labelled reply must cover every number 1..n exactly once.
+
+    A bare run of exactly ``n`` numbers is still accepted as a fallback —
+    flash-lite answered ``1.0, 0.0, 3.0`` to the old positional prompt — but
+    only when it carries no labels at all, so a half-labelled reply is never
+    guessed at.
     """
+    labelled: dict[int, float] = {}
+    for label, value in _LABELLED_RE.findall(text):
+        index = int(label)
+        if index in labelled and labelled[index] != float(value):
+            return None  # the same candidate graded two different ways
+        labelled[index] = float(value)
+    if labelled:
+        if set(labelled) != set(range(1, n + 1)) or not all(
+            _whole_grade(v) for v in labelled.values()
+        ):
+            return None
+        return [int(labelled[i]) for i in range(1, n + 1)]
+
     numbers = [float(m) for m in _NUMBER_RE.findall(text)]
-    if len(numbers) != n or any(g != int(g) or not 0 <= g <= 3 for g in numbers):
+    if len(numbers) != n or not all(_whole_grade(g) for g in numbers):
         return None
     return [int(g) for g in numbers]
 
@@ -78,6 +108,31 @@ def apply_grades(hits: list[SearchHit], grades: list[int]) -> list[SearchHit]:
     return [hits[i] for _, i in ranked]
 
 
+async def _complete(cfg: Settings, question: str, hits: list[SearchHit]) -> str:
+    """The rerank model's reply. One retry on a rate limit, nothing else."""
+    for attempt in (1, 2):
+        try:
+            response = await litellm.acompletion(
+                model=cfg.models.rerank,
+                messages=[
+                    {"role": "system", "content": _SYSTEM},
+                    {"role": "user", "content": _prompt(question, hits)},
+                ],
+                api_key=(
+                    cfg.openrouter_api_key.get_secret_value() if cfg.openrouter_api_key else None
+                ),
+                temperature=0,
+                timeout=_TIMEOUT_S,
+            )
+            return response.choices[0].message.content or ""
+        except litellm.RateLimitError:
+            if attempt == 2:
+                raise
+            log.info("rerank.rate_limited retrying in %.0fs", _RETRY_DELAY_S)
+            await asyncio.sleep(_RETRY_DELAY_S)
+    raise AssertionError("unreachable")
+
+
 async def rerank(
     cfg: Settings, question: str, hits: list[SearchHit]
 ) -> list[SearchHit] | None:
@@ -85,17 +140,7 @@ async def rerank(
     if len(hits) < 2:
         return None
     try:
-        response = await litellm.acompletion(
-            model=cfg.models.rerank,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": _prompt(question, hits)},
-            ],
-            api_key=cfg.openrouter_api_key.get_secret_value() if cfg.openrouter_api_key else None,
-            temperature=0,
-            timeout=_TIMEOUT_S,
-        )
-        text = response.choices[0].message.content or ""
+        text = await _complete(cfg, question, hits)
     except Exception:
         log.warning("rerank.call_failed", exc_info=True)
         return None

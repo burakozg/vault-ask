@@ -595,8 +595,17 @@ what lets `final_top_k` be 16 without the tail filling with filler: on "what
 content do we have on deepfakes?" the pre-rerank tail held a photo-gallery
 agent guide (twice, at two paths) and a board-governance article.
 
-Best-effort, like the embedding host: a timeout, 429 or unparseable reply
-falls back to the fused order, and if *every* candidate grades 0 the grades are
+The model is asked for one `N: grade` line per candidate rather than a
+positional list, because positional lists misalign: a local `qwen3.5:9b`
+returned 20-26 grades for 30 candidates, so every grade after the first slip
+belonged to the wrong chunk. A labelled reply must cover each number exactly
+once; a bare list of exactly N whole numbers is still accepted as a fallback
+(flash-lite once answered `1.0, 0.0, 3.0`). A single 429 is retried after 2 s.
+A 9B local model was also compared as the rerank model and rejected: 12-42 s
+per call against ~1 s, and it graded clearly on-topic "Microsoft Entra" notes 0.
+
+Best-effort, like the embedding host: a timeout, a persistent 429 or an
+unparseable reply falls back to the fused order, and if *every* candidate grades 0 the grades are
 ignored — a reranker that finds nothing is more likely wrong than the whole
 candidate set being noise. Rerank only ever removes or reorders candidates, so
 the `allow_web` sensitivity filter, applied at retrieval, is untouched. Note
