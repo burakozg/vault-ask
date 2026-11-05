@@ -44,16 +44,20 @@ Ollama's default bind is `127.0.0.1:11434` — reachable from the machine
 itself, not from the NAS container. It has to listen on an interface the rest
 of the network can reach.
 
-**macOS (the Ollama.app menu-bar app):**
+**macOS (the Ollama.app menu-bar app):** open Ollama's Settings and turn on
+**Expose Ollama to the network**, then quit and reopen the app if it asks. The
+setting is stored by the app and applied at every start, so it survives reboots
+with nothing else to install. Verified: with the toggle on and `OLLAMA_HOST`
+unset in launchd, a fresh process listens on `*:11434`, and `localhost`, the
+LAN address and the NAS all reach it.
 
-```sh
-launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
-```
+Do not use `launchctl setenv OLLAMA_HOST` for the app instead. It is forgotten
+at reboot, and a LaunchAgent that sets it at login races the app: Ollama can
+start first and come up on `127.0.0.1` only, with the variable correctly set and
+no effect, so the NAS sees "connection refused" and vault-ask quietly falls back
+to keyword-only search (and its indexer logs a failure for every doc).
 
-Then quit and reopen the Ollama app (or `killall Ollama` and relaunch it) —
-`launchctl setenv` only affects processes started after it runs.
-
-**macOS / Linux (running `ollama serve` yourself, e.g. as a service):**
+**Linux, or macOS running `ollama serve` yourself (e.g. as a service):**
 
 ```sh
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
@@ -73,11 +77,6 @@ after which Ollama silently fails to bind and the NAS sees "connection
 refused" with nothing in vault-ask having changed. On a single-interface
 machine, `0.0.0.0` exposes exactly the same network surface and has neither
 problem.
-
-**`launchctl setenv` does not survive a reboot.** To set it at every login
-install the LaunchAgent in `scripts/com.homelab.ollama-env.plist` (the install
-commands are in its header). It has to run before Ollama starts, so after the
-first login quit and reopen the Ollama app once.
 
 **Ollama has no authentication.** Listening on the LAN means anything on the
 LAN can run models and read the model list. The macOS application firewall
